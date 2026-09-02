@@ -1,0 +1,19 @@
+{
+  "competition": "EPL",
+  "created_at": "2026-09-01T12:28:18.440160+00:00",
+  "feature_set": "rolling_v1",
+  "feature_window": 5,
+  "files": [
+    {
+      "path": "data/raw/snapshots/3e3a8352f9ada678-E0_2025.csv",
+      "sha256": "3e3a8352f9ada6789c508d6ca184424421fed56a30400904a4a327c583407e62"
+    },
+    {
+      "path": "data/raw/snapshots/7c7ab2d623aa5d44-E0_2026.csv",
+      "sha256": "7c7ab2d623aa5d44444f75a313993e3b688c815aa8cb23b929eb3332fde1654b"
+    }
+  ],
+  "match_count": 400,
+  "odds_count": 2460,
+  "season": "historical"
+}

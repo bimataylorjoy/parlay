@@ -1,0 +1,15 @@
+{
+  "competition": "EPL",
+  "created_at": "2026-09-01T11:26:09.996785+00:00",
+  "feature_set": "rolling_v1",
+  "feature_window": 5,
+  "files": [
+    {
+      "path": "data/raw/snapshots/d0c8ce4a96d886cf-E0.csv",
+      "sha256": "d0c8ce4a96d886cf60cf101f570f4a3893844226f91c7bd769eb568c49edbfa4"
+    }
+  ],
+  "match_count": 380,
+  "odds_count": 3420,
+  "season": "2024-25"
+}

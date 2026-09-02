@@ -1,0 +1,31 @@
+{
+  "competition": "Championship",
+  "created_at": "2026-09-02T12:33:42.842905+00:00",
+  "feature_set": "rolling_v1",
+  "feature_window": 5,
+  "files": [
+    {
+      "path": "data/raw/snapshots/f34c340446c91637-f34c340446c91637-E1.csv",
+      "sha256": "f34c340446c916374be66bdc2fb25b87ee7f2662712ca009653d03ac705535f9"
+    },
+    {
+      "path": "data/raw/snapshots/5737f6cc95c95092-5737f6cc95c95092-E1.csv",
+      "sha256": "5737f6cc95c95092b28317f41d3123e2fb09345434efc1c84bbdf15830849ab3"
+    },
+    {
+      "path": "data/raw/snapshots/cd38ab0586ea8cb4-cd38ab0586ea8cb4-E1.csv",
+      "sha256": "cd38ab0586ea8cb4d573c363ff70749117f116da5b2741e5b0ea37da05860b1b"
+    },
+    {
+      "path": "data/raw/snapshots/a181451be4801b9f-a181451be4801b9f-E1.csv",
+      "sha256": "a181451be4801b9f838daf5f6aaf21e9f09d36042be9e6c15388e71001e772ea"
+    },
+    {
+      "path": "data/raw/snapshots/98954c319950f191-98954c319950f191-E1.csv",
+      "sha256": "98954c319950f19158624b17a154ef1c56eb7b8d169ef317f28f06d11d0b9a74"
+    }
+  ],
+  "match_count": 2760,
+  "odds_count": 23121,
+  "season": "multi"
+}

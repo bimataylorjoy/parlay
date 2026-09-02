@@ -1,0 +1,7 @@
+Date,HomeTeam,AwayTeam,B365H,B365D,B365A,B365>1.5,B365<1.5,B365>2.5,B365<2.5,B365>3.5,B365<3.5,B365BTTS_Y,B365BTTS_N,B365C>9.5,B365C<9.5,B365C>10.5,B365C<10.5,B365C>11.5,B365C<11.5
+04/09/2026,Ipswich Town,Liverpool,5.00,4.00,1.65,1.25,3.80,1.85,1.95,2.80,1.40,1.70,2.05,1.85,1.95,1.90,1.90,1.95,1.85
+05/09/2026,Manchester City,Coventry City,1.28,5.50,11.00,1.15,5.00,1.50,2.50,2.20,1.65,1.60,2.30,1.70,2.10,1.75,2.05,1.80,2.00
+# Kolom WAJIB: Date,HomeTeam,AwayTeam | Kolom OPSIONAL: semua B365* (isi jika ada odds bandar, kosongkan jika tidak ada)
+# HomeTeam/AwayTeam boleh pakai nama lengkap ("Manchester City","Coventry City","Brighton & Hove Albion") atau singkat ("Man City","Coventry","Brighton") — otomatis canonical via src/parlay/data/normalization.py:46
+# O/U mendukung half & quarter: 1.5,2.0,2.25,2.5,2.75,3.0,3.5 (contoh: tambah kolom B365>2.75,B365<2.75 jika bandar sediakan)
+# BTTS: B365BTTS_Y = BTTS Yes, B365BTTS_N = No | Corners: B365C>9.5 = Over 9.5 corners, B365C<9.5 = Under

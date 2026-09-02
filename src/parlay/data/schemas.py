@@ -1,0 +1,38 @@
+"""Small, dependency-light contracts for time-safe football data."""
+
+from dataclasses import dataclass
+from datetime import date, datetime
+from typing import Optional
+
+
+@dataclass(frozen=True, slots=True)
+class Match:
+    match_id: str
+    date: date
+    competition: str
+    season: str
+    home_team: str
+    away_team: str
+    home_goals: int | None
+    away_goals: int | None
+    neutral: bool = False
+    source: str = "unknown"
+    source_timestamp: Optional[datetime] = None
+    kickoff_at: Optional[datetime] = None
+    home_sot: Optional[int] = None
+    away_sot: Optional[int] = None
+    home_corners: Optional[int] = None
+    away_corners: Optional[int] = None
+    home_shots: Optional[int] = None
+    away_shots: Optional[int] = None
+
+
+@dataclass(frozen=True, slots=True)
+class OddsSnapshot:
+    match_id: str
+    bookmaker: str
+    market: str
+    selection: str
+    odds: float
+    captured_at: datetime
+    is_closing: bool = False

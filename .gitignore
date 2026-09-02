@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+# Data - large/binary, regenerated via ingest
+data/parlay.sqlite
+data/parlay.sqlite-journal
+data/raw/snapshots/
+# Outputs - generated predictions (regenerated via predict)
+outputs/
+# OS
+.DS_Store
+*.log
+.env
+# Secrets
+*.token
