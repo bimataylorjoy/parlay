@@ -45,3 +45,7 @@ The database layer uses SQLite by default and keeps separate tables for:
 
 Backtests use expanding time windows. A prediction for a match may only use
 matches, odds, and feature snapshots available before that prediction time.
+
+## Contributors
+
+* **bimataylorjoy** — [@bimataylorjoy](https://github.com/bimataylorjoy) (maintainer, multi-market engine, Championship ingestion, CLI dashboard)
