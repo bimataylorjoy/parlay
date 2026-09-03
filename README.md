@@ -270,6 +270,8 @@ Enrichment is stored as timestamped audit data in the `information_snapshots` ta
 
 The current external feature layer (`features.external.external_information_features`) exposes availability and coverage indicators only. It does not alter goal rates from a lineup or injury count. Player-impact adjustments require historical player ratings, confirmed availability labels, shrinkage, and an out-of-sample ablation benchmark; arbitrary weights are intentionally not applied.
 
+The optional `features.player_impact` module implements the minimum valid adjustment contract: callers must provide externally trained historical player ratings and expected minutes. Without those ratings, lineup/injury data remains an audit feature and reports `unavailable` rather than inventing numerical impact. Active adjustments are capped and must be compared with the no-enrichment baseline through ablation evaluation.
+
 Sportmonks premium odds history is a price-update history. It is not a full order book, traded volume, or authenticated bookmaker order flow. The project therefore labels it as market movement evidence and does not treat it as causal signal without separate validation.
 
 ---
