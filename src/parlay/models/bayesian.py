@@ -8,6 +8,8 @@ but allows for full uncertainty quantification.
 from typing import Any
 import numpy as np
 
+from .numerics import LOG_RATE_MAX, LOG_RATE_MIN
+
 # Lazy loading of PyMC to avoid heavy imports when not explicitly requested
 _pymc = None
 
@@ -66,8 +68,10 @@ def fit_poisson_bayesian(
         away_log = intercept + attack[away_idx] - defense[home_idx]
         
         # Expected goals
-        home_theta = pm.math.exp(home_log)
-        away_theta = pm.math.exp(away_log)
+        # Keep the Bayesian likelihood on the same finite rate domain used by
+        # deterministic fitting and prediction.
+        home_theta = pm.math.exp(pm.math.clip(home_log, LOG_RATE_MIN, LOG_RATE_MAX))
+        away_theta = pm.math.exp(pm.math.clip(away_log, LOG_RATE_MIN, LOG_RATE_MAX))
         
         # Likelihood
         # If all weights are exactly 1.0, we can use the native ObservedRV

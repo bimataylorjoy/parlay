@@ -90,16 +90,26 @@ def tune_half_life_nested(
     best_hl = best["half_life_days"]
     # Final evaluation on holdout with locked config
     from parlay.evaluation.backtest import run_backtest_full
+    first_date = sorted_matches[0].date
+    train_days = max(initial_train_days, (dev_end - first_date).days + 1)
     holdout_res = run_backtest_full(
-        holdout + development[-initial_train_days:],  # ensure train has history
+        sorted_matches,
         model=model, estimator=estimator, half_life_days=best_hl,
-        initial_train_days=initial_train_days, test_days=test_days,
+        initial_train_days=train_days, test_days=test_days,
+        evaluation_start=(dev_end + timedelta(days=1)).isoformat(),
     )
+    holdout_records = [r for r in holdout_res.records if r.forecast_timestamp[:10] > dev_end.isoformat()]
+    if not holdout_records:
+        raise ValueError("holdout evaluation produced no holdout predictions")
+    from dataclasses import asdict
+    from parlay.evaluation.metrics import aggregate_scores
+    holdout_metrics = aggregate_scores(asdict(r) for r in holdout_records)
+    holdout_metrics["n"] = float(len(holdout_records))
     return {
         "tuned_on": f"development <= {dev_end.isoformat()} ({len(development)} matches)",
         "evaluated_on": f"holdout > {dev_end.isoformat()} ({len(holdout)} matches)",
         "hyperparameters": {"half_life_days": best_hl},
         "selection_metric": "log_loss",
-        "holdout_metrics": holdout_res.metrics,
+        "holdout_metrics": holdout_metrics,
         "inner_results": inner_results,
     }

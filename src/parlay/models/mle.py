@@ -12,7 +12,7 @@ from typing import Literal
 import numpy as np
 from scipy.optimize import minimize
 
-from .dixon_coles import tau
+from .dixon_coles import _global_rho_bounds, tau
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,6 +38,7 @@ def fit_poisson_mle(
     l2_reg: float = 0.01,
     include_rho: bool = False,
     maxiter: int = 500,
+    rho_bounds: tuple[float, float] | None = None,
 ) -> tuple[np.ndarray, np.ndarray, float, float, float, bool, float]:
     """Optimize attack, defense, intercept, home_advantage, and optional rho.
 
@@ -100,7 +101,8 @@ def fit_poisson_mle(
                     home_goals[low], away_goals[low],
                     lambda_home[low], lambda_away[low], rho_val,
                 )
-                tau_vals = np.maximum(tau_vals, 1e-12)
+                if np.any(tau_vals <= 0):
+                    return float("inf")
                 ll[low] += np.log(tau_vals)
 
         # Weighted negative log-likelihood
@@ -124,16 +126,10 @@ def fit_poisson_mle(
     # Unified domain with prediction (§4): log_lambda clip [-3,3] so keep mu,gamma consistent
     bounds = [(-3.0, 3.0)] * (2 * n_free_team_params) + [(-2.0, 2.0), (-1.0, 1.0)]
     if include_rho:
-        # Use globally valid rho domain (§3) instead of hard [-0.3,0.3]
-        try:
-            from .dixon_coles import _global_rho_bounds
-            # Estimate lambda for bounds using initial rates (before optimization, conservative)
-            # Use average rates as proxy; optimizer will respect global interval
-            # For now keep [-0.3,0.3] and let objective penalize invalid via tau>=0,
-            # but document that true global bounds are computed in fit_team_strength after first pass.
-            bounds.append((-0.3, 0.3))
-        except Exception:
-            bounds.append((-0.3, 0.3))
+        avg_rate = max(0.5, float(np.average(np.r_[home_goals, away_goals], weights=np.r_[weights, weights])))
+        initial_home = np.full(len(home_idx), avg_rate * math.exp(0.25))
+        initial_away = np.full(len(away_idx), avg_rate)
+        bounds.append(rho_bounds or _global_rho_bounds(initial_home, initial_away))
 
     res = minimize(
         objective,

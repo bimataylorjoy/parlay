@@ -21,6 +21,17 @@ class FeatureSet:
     as_of: datetime
     groups: dict[str, dict[str, FeatureValue]]  # group -> feature -> value
 
+    def is_knowable(self, forecast_timestamp: datetime) -> bool:
+        """Return whether every feature is available by the forecast cutoff."""
+        cutoff = forecast_timestamp
+        if cutoff.tzinfo is None:
+            cutoff = cutoff.replace(tzinfo=timezone.utc)
+        return all(
+            value.computed_at <= cutoff and value.available_at <= cutoff
+            for group in self.groups.values()
+            for value in group.values()
+        )
+
 
 # Registry of feature groups and their provenance assumptions
 

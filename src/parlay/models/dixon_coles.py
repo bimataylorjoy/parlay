@@ -5,6 +5,7 @@ import math
 import numpy as np
 
 from .poisson import poisson_pmf
+from .numerics import DEFAULT_TRUNCATION_EPSILON, adaptive_support
 
 
 def valid_rho_bounds(home_rate: float | np.ndarray, away_rate: float | np.ndarray) -> tuple[float | np.ndarray, float | np.ndarray]:
@@ -32,13 +33,12 @@ def _global_rho_bounds(
     # lowers/uppers may be arrays
     global_lower = float(np.max(lowers)) if np.asarray(lowers).size else -0.3
     global_upper = float(np.min(uppers)) if np.asarray(uppers).size else 0.3
-    # Intersect with hard prior domain [-0.3, 0.3] and apply safety pad
-    global_lower = max(global_lower / pad if pad else global_lower, -0.3)
-    global_upper = min(global_upper / pad if pad else global_upper, 0.3)
-    # If infeasible (no intersection), fall back to widest feasible near 0
+    # Intersect with the documented research domain without expanding the
+    # mathematically valid interval. The safety margin is applied inward.
+    global_lower = max(global_lower, -0.3)
+    global_upper = min(global_upper, 0.3)
     if global_lower >= global_upper:
-        # Documented fallback: use narrow interval around 0
-        return -0.05, 0.05
+        raise ValueError("no globally valid Dixon-Coles rho interval")
     return float(global_lower * pad), float(global_upper * pad)
 
 
@@ -88,8 +88,8 @@ def estimate_rho(
     away_rates: np.ndarray,
     weights: np.ndarray | None = None,
     *,
-    grid_min: float = -0.3,
-    grid_max: float = 0.3,
+                 grid_min: float | None = None,
+                 grid_max: float | None = None,
     grid_points: int = 61,
 ) -> float:
     """Estimate rho by maximizing weighted pseudo-log-likelihood over a grid.
@@ -104,6 +104,11 @@ def estimate_rho(
     hr = np.asarray(home_rates, dtype=float)
     ar = np.asarray(away_rates, dtype=float)
     w = np.ones(len(hg), dtype=float) if weights is None else np.asarray(weights, dtype=float)
+    global_min, global_max = _global_rho_bounds(hr, ar)
+    grid_min = global_min if grid_min is None else max(grid_min, global_min)
+    grid_max = global_max if grid_max is None else min(grid_max, global_max)
+    if grid_min > grid_max:
+        raise ValueError("rho grid does not overlap the globally valid interval")
 
     # Pre-compute base Poisson log-likelihoods (constant w.r.t. rho)
     base_ll = (
@@ -119,12 +124,10 @@ def estimate_rho(
     for rho in np.linspace(grid_min, grid_max, grid_points):
         log_tau = np.zeros(len(hg))
         if np.any(low):
-            try:
-                tau_values = tau(hg[low], ag[low], hr[low], ar[low], rho)
-                tau_values = np.maximum(tau_values, 1e-15)
-                log_tau[low] = np.log(tau_values)
-            except ValueError:
+            tau_values = tau(hg[low], ag[low], hr[low], ar[low], rho)
+            if np.any(tau_values <= 0):
                 continue
+            log_tau[low] = np.log(tau_values)
         total = np.sum(w * (base_ll + log_tau))
         if total > best_ll_total:
             best_ll_total = total
@@ -133,14 +136,18 @@ def estimate_rho(
 
 
 def score_matrix(home_rate: float, away_rate: float, rho: float = 0.0,
-                 max_goals: int = 10) -> np.ndarray:
+                 max_goals: int | None = 10, *, epsilon: float = DEFAULT_TRUNCATION_EPSILON) -> np.ndarray:
     """Return a normalized Dixon-Coles score matrix.
 
     The finite grid is normalized after applying the correction. This makes
     truncation explicit and avoids silently dropping rejected samples.
     """
-    if max_goals < 1:
+    if max_goals is not None and max_goals < 1:
         raise ValueError("max_goals must be at least 1")
+    if max_goals is None:
+        home_k, _ = adaptive_support(home_rate, epsilon)
+        away_k, _ = adaptive_support(away_rate, epsilon)
+        max_goals = max(home_k, away_k)
     goals = np.arange(max_goals + 1)
     matrix = np.outer(poisson_pmf(goals, home_rate), poisson_pmf(goals, away_rate))
     matrix *= tau(goals[:, None], goals[None, :], home_rate, away_rate, rho)

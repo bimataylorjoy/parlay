@@ -1,12 +1,13 @@
 """Historical rolling features with strict pre-match information boundaries."""
 
 from dataclasses import asdict
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 import json
 import math
 
 from parlay.data.schemas import Match
 from parlay.data.validation import validate_matches
+from .registry import FeatureSet, FeatureValue
 
 
 def build_pre_match_features(matches: list[Match], *, window: int = 5, forecast_lead_minutes: int = 60) -> dict[str, dict[str, float]]:
@@ -112,6 +113,44 @@ def build_pre_match_features(matches: list[Match], *, window: int = 5, forecast_
             row.home_shots or 0,
         ))
     return output
+
+
+def build_pre_match_feature_sets(
+    matches: list[Match], *, window: int = 5, forecast_lead_minutes: int = 60,
+    source: str = "historical_match_results",
+) -> dict[str, FeatureSet]:
+    """Build rolling features with explicit computed/available timestamps.
+
+    The legacy dictionary builder remains unchanged for compatibility. This
+    companion API makes provenance part of the data contract for new callers.
+    """
+    values = build_pre_match_features(
+        matches, window=window, forecast_lead_minutes=forecast_lead_minutes
+    )
+    result: dict[str, FeatureSet] = {}
+    for match in validate_matches(matches):
+        if match.kickoff_at is not None:
+            kickoff = match.kickoff_at
+            if kickoff.tzinfo is None:
+                kickoff = kickoff.replace(tzinfo=timezone.utc)
+            as_of = kickoff - timedelta(minutes=forecast_lead_minutes)
+        else:
+            as_of = datetime.combine(match.date, datetime.min.time(), timezone.utc)
+        feature_values = {
+            name: FeatureValue(
+                value=float(value),
+                source=source,
+                computed_at=as_of,
+                available_at=as_of,
+            )
+            for name, value in values.get(match.match_id, {}).items()
+        }
+        result[match.match_id] = FeatureSet(
+            match_id=match.match_id,
+            as_of=as_of,
+            groups={"historical": feature_values},
+        )
+    return result
 
 
 def features_json(features: dict[str, float]) -> str:

@@ -4,6 +4,19 @@ import math
 
 import numpy as np
 
+from .numerics import DEFAULT_SCORE_CAP, DEFAULT_TRUNCATION_EPSILON
+
+
+def _adaptive_nb_support(mean: float, dispersion: float, epsilon: float) -> int:
+    if not 0 < epsilon < 1:
+        raise ValueError("epsilon must be between 0 and 1")
+    cumulative = 0.0
+    for cutoff in range(DEFAULT_SCORE_CAP + 1):
+        cumulative += float(negative_binomial_pmf(np.array([cutoff]), mean, dispersion)[0])
+        if 1.0 - cumulative < epsilon:
+            return cutoff
+    return DEFAULT_SCORE_CAP
+
 
 def negative_binomial_pmf(k: np.ndarray, mean: float, dispersion: float) -> np.ndarray:
     """Return NB2 probabilities where Var(Y) = mean + mean**2 / dispersion."""
@@ -56,10 +69,14 @@ def estimate_dispersion(
 
 def score_matrix(home_mean: float, away_mean: float,
                  home_dispersion: float, away_dispersion: float,
-                 max_goals: int = 10) -> np.ndarray:
+                 max_goals: int | None = 10, *, epsilon: float = DEFAULT_TRUNCATION_EPSILON) -> np.ndarray:
     """Return normalized P(home goals, away goals) on a finite score grid."""
-    if max_goals < 1:
+    if max_goals is not None and max_goals < 1:
         raise ValueError("max_goals must be at least 1")
+    if max_goals is None:
+        home_k = _adaptive_nb_support(home_mean, home_dispersion, epsilon)
+        away_k = _adaptive_nb_support(away_mean, away_dispersion, epsilon)
+        max_goals = max(home_k, away_k)
     goals = np.arange(max_goals + 1)
     home = negative_binomial_pmf(goals, home_mean, home_dispersion)
     away = negative_binomial_pmf(goals, away_mean, away_dispersion)

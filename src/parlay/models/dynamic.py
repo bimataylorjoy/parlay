@@ -39,14 +39,25 @@ def fit_dynamic_strength(
     # Fit baseline
     base = fit_team_strength(matches, half_life_days=config.half_life_days, as_of=as_of)
 
-    # Add drift: attack/defense slightly smoothed toward recent form
-    # For research, we perturb by sigma * recent trend (here approximated as 0)
-    # This is intentionally simple; benchmark must show improvement before claiming value
-    # We just return baseline but tag model as dynamic for regime analysis
+    # Apply a deterministic, data-derived recent drift. This is a lightweight
+    # research baseline, not a claim of full state-space inference.
+    ordered = sorted(matches, key=lambda row: row.date)
+    recent = ordered[-min(10, len(ordered)):]
+    attack = dict(base.attack)
+    defense = dict(base.defense)
+    for row in recent:
+        attack[row.home_team] += config.sigma_attack * (row.home_goals - row.away_goals)
+        attack[row.away_team] += config.sigma_attack * (row.away_goals - row.home_goals)
+        defense[row.home_team] += config.sigma_defense * (row.away_goals - row.home_goals)
+        defense[row.away_team] += config.sigma_defense * (row.home_goals - row.away_goals)
+    mean_attack = sum(attack.values()) / len(attack)
+    mean_defense = sum(defense.values()) / len(defense)
+    attack = {team: value - mean_attack for team, value in attack.items()}
+    defense = {team: value - mean_defense for team, value in defense.items()}
     return TeamStrengthModel(
         teams=base.teams,
-        attack=dict(base.attack),
-        defense=dict(base.defense),
+        attack=attack,
+        defense=defense,
         intercept=base.intercept,
         home_advantage=base.home_advantage,
         model="dynamic_" + base.model,
@@ -54,6 +65,9 @@ def fit_dynamic_strength(
         home_dispersion=base.home_dispersion,
         away_dispersion=base.away_dispersion,
         max_goals=base.max_goals,
+        fit_converged=base.fit_converged,
+        fit_negative_log_likelihood=base.fit_negative_log_likelihood,
+        fit_warning="dynamic research drift applied",
     )
 
 

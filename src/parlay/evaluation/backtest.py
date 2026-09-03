@@ -101,6 +101,8 @@ def run_backtest(
     forecast_lead_minutes: int = 60,
     strategy_min_edge: float = 0.03,
     strategy_min_ev: float = 0.02,
+    evaluation_mode: str = "rolling_origin",
+    calibration_mode: str | None = None,
 ) -> tuple[list[PredictionRecord], dict[str, float]]:
     result = run_backtest_full(
         matches, model=model, estimator=estimator, model_version=model_version,
@@ -109,6 +111,7 @@ def run_backtest(
         max_goals=max_goals, sot_weight=sot_weight, odds=odds, bookmaker=bookmaker,
         forecast_lead_minutes=forecast_lead_minutes,
         strategy_min_edge=strategy_min_edge, strategy_min_ev=strategy_min_ev,
+        evaluation_mode=evaluation_mode, calibration_mode=calibration_mode,
     )
     return result.records, result.metrics
 
@@ -132,6 +135,9 @@ def run_backtest_full(
     strategy_min_ev: float = 0.02,
     evaluation_mode: str = "rolling_origin",
     calibration_mode: str | None = None,
+    calibration_records: list[PredictionRecord] | None = None,
+    evaluation_start: str | None = None,
+    evaluation_end: str | None = None,
 ) -> BacktestResult:
     if forecast_lead_minutes < 0:
         raise ValueError("forecast_lead_minutes must be non-negative")
@@ -144,11 +150,14 @@ def run_backtest_full(
         step_days=step_days,
         mode=evaluation_mode,
         forecast_lead_minutes=forecast_lead_minutes,
+        start_date=datetime.fromisoformat(evaluation_start).date() if evaluation_start else None,
+        end_date=datetime.fromisoformat(evaluation_end).date() if evaluation_end else None,
     )
     records: list[PredictionRecord] = []
     fold_metrics_list: list[FoldMetrics] = []
     version = model_version or f"{model}_{estimator}_v1"
     for fold_index, fold in enumerate(folds):
+        prior_records = list(records)
         fold_records: list[PredictionRecord] = []
         fitted = fit_team_strength(
             list(fold.train), model=model, estimator=estimator, as_of=fold.train_end,
@@ -217,6 +226,15 @@ def run_backtest_full(
             fold_records.append(record)
         records.extend(fold_records)
         if fold_records:
+            available_calibration = calibration_records if calibration_records is not None else prior_records
+            if calibration_mode == "temperature" and available_calibration:
+                from parlay.evaluation.calibration import find_optimal_temperature, apply_calibration
+                eligible = [r for r in available_calibration if r.forecast_timestamp < fold_records[0].forecast_timestamp]
+                if eligible:
+                    temperature = find_optimal_temperature(eligible)
+                    calibrated = apply_calibration(fold_records, temperature)
+                    fold_records = [PredictionRecord(**row) for row in calibrated]
+                    records[-len(fold_records):] = fold_records
             fold_agg = aggregate_scores(asdict(r) for r in fold_records)
             fold_metrics_list.append(FoldMetrics(
                 fold_index=fold_index,
@@ -234,6 +252,9 @@ def run_backtest_full(
         "forecast_timestamp_policy": f"kickoff_minus_{forecast_lead_minutes}m",
         "model_update_frequency": "per_fold" if evaluation_mode == "rolling_origin" else "fixed_origin",
         "calibration_mode": calibration_mode,
+        "calibration_window": "prior_predictions_only" if calibration_mode == "temperature" else None,
+        "evaluation_start": evaluation_start,
+        "evaluation_end": evaluation_end,
     }
     # Regime analysis (§18) — sample size + log loss/brier per regime
     try:

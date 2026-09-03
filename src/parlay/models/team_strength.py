@@ -31,7 +31,11 @@ class TeamStrengthModel:
     rho: float = 0.0
     home_dispersion: float = 10.0
     away_dispersion: float = 10.0
-    max_goals: int = 10
+    max_goals: int | None = 10
+    fit_converged: bool = True
+    fit_negative_log_likelihood: float | None = None
+    fit_warning: str | None = None
+    posterior: object | None = None
 
     def expected_goals(self, home_team: str, away_team: str, neutral: bool = False) -> tuple[float, float]:
         if home_team not in self.attack or away_team not in self.attack:
@@ -46,13 +50,14 @@ class TeamStrengthModel:
 
     def score_matrix(self, home_team: str, away_team: str, neutral: bool = False) -> np.ndarray:
         home_mean, away_mean = self.expected_goals(home_team, away_team, neutral)
-        if self.model == "poisson":
+        base_model = self.model.removeprefix("dynamic_")
+        if base_model == "poisson":
             from .poisson import score_matrix
             return score_matrix(home_mean, away_mean, self.max_goals)
-        if self.model == "dixon_coles":
+        if base_model == "dixon_coles":
             from .dixon_coles import score_matrix
             return score_matrix(home_mean, away_mean, self.rho, self.max_goals)
-        if self.model == "negative_binomial":
+        if base_model == "negative_binomial":
             from .negative_binomial import score_matrix
             return score_matrix(
                 home_mean, away_mean, self.home_dispersion,
@@ -73,7 +78,7 @@ def fit_team_strength(
     l2_reg: float = 0.01,
     rho: float | None = None,
     dispersion: float | None = None,
-    max_goals: int = 10,
+    max_goals: int | None = 10,
     sot_weight: float = 0.0,
     sot_conversion_rate: float = 0.31,
 ) -> TeamStrengthModel:
@@ -116,7 +121,11 @@ def fit_team_strength(
     index = {team: i for i, team in enumerate(teams)}
     reference = as_of or max(row.date for row in rows)
     # Performance: cache keyed by information cutoff + hyperparams (§21)
-    cache_key_raw = f"{reference}|{half_life_days}|{model}|{estimator}|{l2_reg}|{rho}|{dispersion}|{len(rows)}|{hash(tuple(sorted(teams)))}"
+    match_fingerprint = tuple(
+        (row.match_id, row.date.isoformat(), row.home_goals, row.away_goals)
+        for row in rows
+    )
+    cache_key_raw = f"{reference}|{half_life_days}|{model}|{estimator}|{l2_reg}|{rho}|{dispersion}|{max_goals}|{match_fingerprint}"
     cache_key = hashlib.sha256(cache_key_raw.encode()).hexdigest()[:16]
     if cache_key in _FIT_CACHE and max_goals == _FIT_CACHE[cache_key].max_goals:
         return _FIT_CACHE[cache_key]
@@ -173,16 +182,22 @@ def fit_team_strength(
         raise ValueError("as_of cannot be before a match date")
     weights = np.ones(len(rows)) if half_life_days is None else np.exp(-math.log(2) * age / half_life_days)
 
+    fit_converged = True
+    fit_nll: float | None = None
+    fit_warning: str | None = None
+    posterior = None
     if estimator == "mle":
         from .mle import fit_poisson_mle
         include_rho_in_mle = (model == "dixon_coles" and rho is None)
-        att_opt, def_opt, intercept, home_advantage, mle_rho, _, _ = fit_poisson_mle(
+        att_opt, def_opt, intercept, home_advantage, mle_rho, fit_converged, fit_nll = fit_poisson_mle(
             home, away, home_goals, away_goals, weights, len(teams),
             l2_reg=l2_reg, include_rho=include_rho_in_mle,
         )
         attack = att_opt
         defense = def_opt
         fitted_rho = rho if rho is not None else mle_rho
+        if not fit_converged:
+            fit_warning = "Poisson/Dixon-Coles optimizer did not converge"
 
     elif estimator == "bayesian_hmc":
         from .bayesian import fit_poisson_bayesian
@@ -195,6 +210,8 @@ def fit_team_strength(
         intercept = float(post["intercept"].mean())
         home_advantage = float(post["home_advantage"].mean())
         fitted_rho = rho if rho is not None else 0.0
+        fit_nll = None
+        posterior = idata
 
     else:
         # Heuristic coordinate descent on log(goals + 0.5)
@@ -262,7 +279,7 @@ def fit_team_strength(
             if estimator == "mle":
                 from .mle import fit_negative_binomial_mle
                 # Joint NB MLE (attack, defense, mu, gamma, phi)
-                att_nb, def_nb, mu_nb, gamma_nb, phi_nb, _, _ = fit_negative_binomial_mle(
+                att_nb, def_nb, mu_nb, gamma_nb, phi_nb, fit_converged, fit_nll = fit_negative_binomial_mle(
                     home, away, home_goals, away_goals, weights, len(teams), l2_reg=l2_reg
                 )
                 # Use NB-fitted attack/defense/intercept if NB model requested
@@ -272,6 +289,8 @@ def fit_team_strength(
                 home_advantage = gamma_nb
                 fitted_home_disp = float(phi_nb)
                 fitted_away_disp = float(phi_nb)
+                if not fit_converged:
+                    fit_warning = "Negative-Binomial optimizer did not converge"
                 # Recompute expected after NB fit for consistency
                 home_expected = np.exp(np.clip(intercept + home_advantage + attack[home] - defense[away], -3.0, 3.0))
                 away_expected = np.exp(np.clip(intercept + attack[away] - defense[home], -3.0, 3.0))
@@ -294,6 +313,10 @@ def fit_team_strength(
         home_dispersion=fitted_home_disp,
         away_dispersion=fitted_away_disp,
         max_goals=max_goals,
+        fit_converged=fit_converged,
+        fit_negative_log_likelihood=fit_nll,
+        fit_warning=fit_warning,
+        posterior=posterior,
     )
     _FIT_CACHE[cache_key] = result
     return result

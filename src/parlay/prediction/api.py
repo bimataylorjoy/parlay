@@ -9,9 +9,9 @@ import numpy as np
 @dataclass(frozen=True, slots=True)
 class ExpectedRates:
     lambda_home_mean: float
-    lambda_home_ci: tuple[float, float]
+    lambda_home_ci: tuple[float, float] | None
     lambda_away_mean: float
-    lambda_away_ci: tuple[float, float]
+    lambda_away_ci: tuple[float, float] | None
     exp_total_goals_mean: float
     exp_total_goals_ci: tuple[float, float] | None = None
 
@@ -95,27 +95,33 @@ def predict_with_uncertainty(
     probs = outcome_probabilities(M)
 
     # Posterior uncertainty if available
+    idata = idata if idata is not None else getattr(model, "posterior", None)
     posterior_std_h = None
     posterior_std_a = None
-    ci_h = (exp_h * 0.85, exp_h * 1.15)
-    ci_a = (exp_a * 0.85, exp_a * 1.15)
+    ci_h = None
+    ci_a = None
+    posterior_error = None
     if idata is not None:
         try:
             from parlay.prediction.bayesian_predictive import posterior_predictive_1x2
-            pp = posterior_predictive_1x2(idata, home_team, away_team, model.teams, model=model.model, rho=model.rho)
+            pp = posterior_predictive_1x2(idata, home_team, away_team, model.teams, model=model.model.removeprefix("dynamic_"), rho=model.rho)
             probs = pp.mean_probability
             ci_h = pp.lambda_home_ci
             ci_a = pp.lambda_away_ci
             posterior_std_h = float((ci_h[1] - ci_h[0]) / 3.29)  # approx std from 90% CI
             posterior_std_a = float((ci_a[1] - ci_a[0]) / 3.29)
-        except Exception:
-            pass
+        except (KeyError, ValueError, TypeError, AttributeError) as exc:
+            posterior_error = f"posterior predictive unavailable: {exc}"
 
     # Anomaly layer
     market_p = None
-    if market_odds and "home" in market_odds and market_odds["home"] > 1:
-        # Convert odds to implied then de-vig not available here, use raw implied as proxy
-        market_p = 1.0 / market_odds["home"]
+    market_method = None
+    if market_odds and all(key in market_odds for key in ("home", "draw", "away")):
+        if all(float(market_odds[key]) > 1.0 for key in ("home", "draw", "away")):
+            from parlay.prediction.markets import de_vig
+            implied = {key: 1.0 / float(market_odds[key]) for key in ("home", "draw", "away")}
+            market_method = "shin"
+            market_p = de_vig(implied, method=market_method)["home"]
     diag = diagnose(
         model_probability=probs["home_win"],
         market_probability=market_p,
@@ -147,7 +153,16 @@ def predict_with_uncertainty(
             anomaly_flags=diag.anomaly_flags,
             decision=diag.decision,
         ),
-        model_metadata={"model": model.model, "rho": model.rho, "home_advantage": model.home_advantage},
+        model_metadata={
+            "model": model.model,
+            "rho": model.rho,
+            "home_advantage": model.home_advantage,
+            "fit_converged": getattr(model, "fit_converged", True),
+            "fit_warning": getattr(model, "fit_warning", None),
+            "posterior_predictive_error": posterior_error,
+            "uncertainty_source": "posterior_predictive" if idata is not None and posterior_error is None else "unavailable",
+            "market_probability_method": market_method,
+        },
         score_matrix_mean=M,
         btts_probabilities=grouped_score_markets(M),
         totals_probabilities=totals,

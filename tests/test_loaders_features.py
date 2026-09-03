@@ -5,7 +5,7 @@ import pytest
 from parlay.data.loaders import load_football_data_csv
 from parlay.data.database import ResearchDatabase
 from parlay.data.ingestion import ingest_csv_files
-from parlay.features.historical import build_pre_match_features
+from parlay.features.historical import build_pre_match_features, build_pre_match_feature_sets
 
 
 def test_loader_reads_football_data_format(tmp_path):
@@ -40,6 +40,17 @@ def test_loader_rejects_missing_column(tmp_path):
     path.write_text("Date,HomeTeam,AwayTeam\n", encoding="utf-8")
     with pytest.raises(ValueError, match="missing columns"):
         load_football_data_csv(path)
+
+
+def test_feature_sets_carry_temporal_provenance():
+    from datetime import datetime, timezone
+    from parlay.data.schemas import Match
+    rows = [Match("a", date(2024, 1, 1), "l", "s", "A", "B", 2, 0, kickoff_at=datetime(2024, 1, 1, 15, tzinfo=timezone.utc))]
+    feature_sets = build_pre_match_feature_sets(rows)
+    feature_set = feature_sets["a"]
+    assert feature_set.as_of.hour == 14
+    assert feature_set.is_knowable(feature_set.as_of)
+    assert not feature_set.is_knowable(feature_set.as_of - __import__("datetime").timedelta(minutes=1))
 
 
 def test_ingestion_writes_database_and_manifest(tmp_path):

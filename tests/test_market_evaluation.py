@@ -47,3 +47,26 @@ def test_evaluate_market_benchmark():
     assert mkt["n"] == 2.0
     assert mkt["log_loss"] > 0
     assert mkt["brier_score"] > 0
+
+
+def test_binary_market_scoring_and_calibration():
+    from parlay.evaluation.market import evaluate_binary_market, market_calibration_bins
+    rows = [
+        SimpleNamespace(over_probability=0.75, actual_market="over"),
+        SimpleNamespace(over_probability=0.75, actual_market="under"),
+        SimpleNamespace(over_probability=0.75, actual_market="push"),
+    ]
+    scores = evaluate_binary_market(rows, probability_attr="over_probability", actual_attr="actual_market")
+    assert scores["n"] == 2
+    assert scores["pushes"] == 1
+    assert market_calibration_bins(rows, probability_attr="over_probability", actual_attr="actual_market")
+
+
+def test_generic_multiclass_market_scoring():
+    from parlay.evaluation.market import evaluate_market_predictions
+    rows = [SimpleNamespace(
+        probabilities={"home": 0.5, "away": 0.5}, actual_market="home"
+    )]
+    scores = evaluate_market_predictions(rows, probabilities_attr="probabilities")
+    assert scores["n"] == 1
+    assert scores["log_loss"] > 0

@@ -57,7 +57,7 @@ Most public betting models leak future information, overfit to goals, and only s
 | **Models** | Poisson, Dixon-Coles `ρ∈[-0.3,0.3]`, NB2 `Var=μ+μ²/φ`, Bayesian HMC, Corners Poisson/NB, time-decay `w=0.5^{age/half_life}`, SOT blending `g_eff=(1-α)g+α·sot·0.31` |
 | **Markets** | `P(i,j)` 11×11 → 1X2, `P(over)=Σ M[total>line]`, BTTS, Asian Handicap quarter, Correct Score `P(i-j)=M[i,j]`, grouped, Corners 21×21 |
 | **Value** | `edge = p_model - p_market`, `EV = p·odds-1`, `Kelly = EV/(odds-1)·fraction` cap `0.5%`, `fair=1/p` |
-| **Eval** | Expanding window, log loss/Brier, temperature scaling, flat-stake, grid tune, compare |
+| **Eval** | Expanding/fixed-origin windows, temporal calibration, nested tuning, market-specific scoring, corners backtest |
 | **CLI** | `ingest`, `backtest`, `compare`, `tune`, `predict`, `sync-sportmonks`, `predict-sportmonks`, `calibrate` |
 
 ---
@@ -293,7 +293,7 @@ This repository has been upgraded per `parlay_upgrade.md` — priority **Informa
 
 **Information availability:** `InformationSet(as_of=forecast, competition)` where `result_known_at = kickoff + lag` (`EPL 115m, Championship 118m`, fallback `23:59` if no kickoff), `forecast = kickoff -60m`. `feature_timestamp ≤ forecast` enforced via `InformationSet.is_result_knowable()` — no `date<=as_of` leakage.
 
-**Temporal evaluation:** `expanding_window(mode="rolling_origin"|"fixed_origin")` with metadata `evaluation_mode, forecast_policy, model_update_frequency`. Calibration is **temporally isolated** (`train|calibrate|test` disjoint, `60/20/20` or explicit windows, per-market `1X2/O/U/BTTS/corners`). Hyperparameter tuning is **nested** (`development → lock → holdout`).
+**Temporal evaluation:** `expanding_window(mode="rolling_origin"|"fixed_origin")` with metadata `evaluation_mode, forecast_policy, model_update_frequency`. Temperature calibration supports disjoint calibration/test windows and the CLI requires forecast timestamps. Hyperparameter tuning is **nested** (`development → lock → holdout`). Market adapters score binary and multiclass market records independently; corners use `run_corners_backtest` with their own temporal metrics.
 
 **Uncertainty:** Exchangeable priors `attack_raw~Normal(0,0.5,n)-mean` (no `α_last=-sum` asymmetry), posterior predictive `P(Y|D)=∫P(Y|θ)P(θ|D)dθ` via Monte Carlo subsample `200` with `λ CI 5/95%` and `Rhat/ESS/divergences`. SOT is **not** fractional pseudo-goals but league-aware covariate `logλ+=β_sot[league]·sot_signal` (`EPL 0.28/Champ 0.22` shrinkage).
 
@@ -324,4 +324,3 @@ MIT — see `LICENSE` (research-only, no warranty).
 ## Disclaimer
 
 This is a **research framework**, not a tipster service. Probabilities are estimates from historical goals/corners. The market (Pinnacle closing `log_loss 0.98`) is still sharper than the model (`1.06`). Use `fair odds` as a **screening filter** with strict bankroll (≤0.5% per bet) and always compare to your bookmaker's live price.
-

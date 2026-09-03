@@ -67,3 +67,18 @@ def test_corner_markets():
     match_1x2 = corner_match_betting(matrix)
     assert np.isclose(sum(match_1x2.values()), 1.0)
     assert match_1x2["home_most"] > 0
+
+
+def test_corners_backtest_is_independent_and_temporal():
+    from datetime import timedelta
+    from parlay.evaluation.corners import run_corners_backtest
+    start = date(2024, 1, 1)
+    rows = [Match(
+        match_id=f"bt-{i}", date=start + timedelta(days=i), competition="EPL",
+        season="test", home_team="A", away_team="B", home_goals=1, away_goals=0,
+        home_corners=5 + (i % 3), away_corners=4 + (i % 2),
+    ) for i in range(18)]
+    result = run_corners_backtest(rows, line=10.5, initial_train_days=4, test_days=2)
+    assert result.records
+    assert result.metadata["market"] == "corners_total"
+    assert result.metrics["records"] == len(result.records)

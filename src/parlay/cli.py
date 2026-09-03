@@ -43,6 +43,8 @@ def build_parser() -> argparse.ArgumentParser:
     backtest.add_argument("--database", default="data/parlay.sqlite")
     backtest.add_argument("--bookmaker", default="Bet365")
     backtest.add_argument("--forecast-lead-minutes", type=int, default=60)
+    backtest.add_argument("--evaluation-mode", choices=("rolling_origin", "fixed_origin"), default="rolling_origin")
+    backtest.add_argument("--calibration-mode", choices=("none", "temperature"), default="none")
     backtest.add_argument("--min-edge", type=float, default=0.03)
     backtest.add_argument("--min-ev", type=float, default=0.02)
 
@@ -101,6 +103,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     calibrate = commands.add_parser("calibrate", help="find optimal temperature scaling on backtest predictions")
     calibrate.add_argument("predictions_csv", type=Path, help="CSV output from a previous backtest")
+    calibrate.add_argument("--train-end", help="exclusive start boundary for calibration window")
+    calibrate.add_argument("--calibrate-end", help="exclusive end boundary for calibration window")
 
     return parser
 
@@ -120,7 +124,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "calibrate":
         import csv
         import math
-        from parlay.evaluation.calibration import find_optimal_temperature, apply_calibration
+        from parlay.evaluation.calibration import find_optimal_temperature, apply_calibration, temporally_safe_calibration
         from types import SimpleNamespace
         from parlay.evaluation.metrics import aggregate_scores
         
@@ -133,6 +137,7 @@ def main(argv: list[str] | None = None) -> int:
             for row in csv.DictReader(handle):
                 records.append(SimpleNamespace(
                     actual=row["actual"],
+                    forecast_timestamp=row.get("forecast_timestamp", ""),
                     home_win=float(row["home_win"]),
                     draw=float(row["draw"]),
                     away_win=float(row["away_win"]),
@@ -152,15 +157,24 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Original Log Loss : {original_metrics['log_loss']:.4f}")
         print(f"Original Brier    : {original_metrics['brier_score']:.4f}")
         
-        T_opt = find_optimal_temperature(records)
+        if not all(getattr(r, "forecast_timestamp", "") for r in records):
+            raise SystemExit("Predictions CSV must contain forecast_timestamp for leakage-safe calibration")
+        if bool(args.train_end) != bool(args.calibrate_end):
+            raise SystemExit("--train-end and --calibrate-end must be provided together")
+        if args.train_end and args.calibrate_end:
+            T_opt, calibrated_records, calibrated_metrics = temporally_safe_calibration(
+                records, train_end=args.train_end, calibrate_end=args.calibrate_end
+            )
+        else:
+            T_opt, calibrated_records, calibrated_metrics = temporally_safe_calibration(records)
         print(f"\nOptimal Temperature T = {T_opt:.4f}")
         
         if math.isclose(T_opt, 1.0, abs_tol=1e-4):
             print("Model is already well-calibrated (T ~ 1.0).")
             return 0
             
-        scaled_records = apply_calibration(records, T_opt)
-        scaled_metrics = aggregate_scores(scaled_records)
+        scaled_records = calibrated_records
+        scaled_metrics = calibrated_metrics
         
         print(f"Calibrated Log Loss : {scaled_metrics['log_loss']:.4f} (diff: {scaled_metrics['log_loss'] - original_metrics['log_loss']:+.4f})")
         print(f"Calibrated Brier    : {scaled_metrics['brier_score']:.4f} (diff: {scaled_metrics['brier_score'] - original_metrics['brier_score']:+.4f})")
@@ -554,6 +568,8 @@ def main(argv: list[str] | None = None) -> int:
         half_life_days=args.half_life_days, sot_weight=args.sot_weight, odds=odds, bookmaker=args.bookmaker,
         forecast_lead_minutes=args.forecast_lead_minutes,
         strategy_min_edge=args.min_edge, strategy_min_ev=args.min_ev,
+        evaluation_mode=args.evaluation_mode,
+        calibration_mode=None if args.calibration_mode == "none" else args.calibration_mode,
     )
     records, metrics = full_result.records, full_result.metrics
     strategy = evaluate_flat_stake(records, min_edge=args.min_edge, min_ev=args.min_ev)

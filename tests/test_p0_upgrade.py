@@ -90,6 +90,42 @@ def test_adaptive_truncation():
     assert meta2["tail_mass_home"] > 1e-4  # significant tail when truncated at 10
 
 
+def test_adaptive_support_uses_smallest_valid_cutoff():
+    from parlay.models.numerics import adaptive_support, poisson_tail
+
+    cutoff, capped = adaptive_support(1.2, epsilon=1e-6, cap=100)
+    assert not capped
+    assert poisson_tail(1.2, cutoff) < 1e-6
+    assert poisson_tail(1.2, cutoff - 1) >= 1e-6
+
+
+def test_dixon_rho_estimation_stays_inside_global_domain():
+    from parlay.models.dixon_coles import estimate_rho
+
+    home_rates = np.array([3.5, 3.0, 0.8])
+    away_rates = np.array([3.5, 2.5, 0.8])
+    lower, upper = _global_rho_bounds(home_rates, away_rates)
+    value = estimate_rho(
+        np.array([0, 1, 0]), np.array([0, 0, 1]), home_rates, away_rates
+    )
+    assert lower <= value <= upper
+
+
+def test_fit_exposes_optimizer_status():
+    matches = [
+        Match(
+            match_id=f"diag-{i}", date=date(2024, 1, i + 1), competition="EPL",
+            season="test", home_team="A", away_team="B", home_goals=i % 3,
+            away_goals=(i + 1) % 2,
+            kickoff_at=datetime(2024, 1, i + 1, 15, 0, tzinfo=timezone.utc),
+        )
+        for i in range(5)
+    ]
+    model = fit_team_strength(matches, estimator="mle", half_life_days=None)
+    assert isinstance(model.fit_converged, bool)
+    assert model.fit_negative_log_likelihood is not None
+
+
 def test_negative_binomial_joint():
     # Synthetic overdispersed data: phi=5
     rng = np.random.default_rng(0)

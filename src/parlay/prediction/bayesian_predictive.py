@@ -35,9 +35,10 @@ def posterior_predictive_1x2(
     *,
     model: str = "poisson",
     rho: float = 0.0,
-    max_goals: int = 10,
+    max_goals: int | None = None,
     subsample: int | None = 200,
     neutral: bool = False,
+    random_seed: int | None = None,
 ) -> PredictionDistribution:
     """Compute posterior predictive 1X2 distribution.
 
@@ -55,7 +56,8 @@ def posterior_predictive_1x2(
     # Flatten chains
     n_chains, n_draws = attack.shape[0], attack.shape[1]
     total = n_chains * n_draws
-    idx = np.random.choice(total, size=subsample if subsample and subsample < total else total, replace=False) if subsample else np.arange(total)
+    rng = np.random.default_rng(random_seed)
+    idx = rng.choice(total, size=subsample if subsample and subsample < total else total, replace=False) if subsample else np.arange(total)
 
     # Map team names to indices
     team_idx = {t: i for i, t in enumerate(teams)}

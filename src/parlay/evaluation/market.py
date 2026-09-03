@@ -9,6 +9,103 @@ from parlay.evaluation.metrics import brier_score, log_loss
 SELECTIONS = ("home", "draw", "away")
 
 
+def _multiclass_scores(probabilities: dict[str, float], actual: str) -> tuple[float, float]:
+    if not probabilities or actual not in probabilities:
+        raise ValueError("actual must be one of the supplied market outcomes")
+    if any(value < 0 for value in probabilities.values()) or abs(sum(probabilities.values()) - 1.0) > 1e-8:
+        raise ValueError("market probabilities must be non-negative and sum to one")
+    return -__import__("math").log(max(probabilities[actual], 1e-15)), sum(
+        (value - float(key == actual)) ** 2 for key, value in probabilities.items()
+    )
+
+
+def evaluate_market_predictions(
+    records: Iterable[object], *, probabilities_attr: str, actual_attr: str = "actual_market",
+) -> dict[str, float]:
+    """Score any mutually-exclusive market with log loss and multiclass Brier.
+
+    ``probabilities_attr`` must point to a probability mapping and
+    ``actual_attr`` to its realized selection. This deliberately does not
+    assume football 1X2 field names.
+    """
+    rows = list(records)
+    scored = []
+    for record in rows:
+        probabilities = getattr(record, probabilities_attr, None)
+        actual = getattr(record, actual_attr, None)
+        if probabilities is None or actual is None:
+            continue
+        scored.append(_multiclass_scores(probabilities, actual))
+    if not scored:
+        return {"n": 0.0, "log_loss": 0.0, "brier_score": 0.0}
+    return {
+        "n": float(len(scored)),
+        "log_loss": sum(item[0] for item in scored) / len(scored),
+        "brier_score": sum(item[1] for item in scored) / len(scored),
+    }
+
+
+def evaluate_binary_market(
+    records: Iterable[object], *, probability_attr: str, actual_attr: str,
+) -> dict[str, float]:
+    """Score a binary market, excluding explicit pushes from binary metrics."""
+    rows = []
+    pushes = 0
+    for record in records:
+        probability = getattr(record, probability_attr, None)
+        actual = getattr(record, actual_attr, None)
+        if probability is None or actual is None:
+            continue
+        if actual == "push":
+            pushes += 1
+            continue
+        if actual not in {"over", "under", "yes", "no"}:
+            raise ValueError(f"unsupported binary market outcome: {actual}")
+        p = float(probability)
+        push_probability = getattr(record, "push_probability", 0.0) or 0.0
+        if push_probability:
+            decisive_mass = 1.0 - float(push_probability)
+            if decisive_mass <= 0:
+                pushes += 1
+                continue
+            p = (p - 0.5 * float(push_probability)) / decisive_mass
+        positive = actual in {"over", "yes"}
+        p_actual = p if positive else 1.0 - p
+        rows.append((-__import__("math").log(max(p_actual, 1e-15)), (p - float(positive)) ** 2))
+    if not rows:
+        return {"n": 0.0, "pushes": float(pushes), "log_loss": 0.0, "brier_score": 0.0}
+    return {
+        "n": float(len(rows)), "pushes": float(pushes),
+        "log_loss": sum(row[0] for row in rows) / len(rows),
+        "brier_score": sum(row[1] for row in rows) / len(rows),
+    }
+
+
+def market_calibration_bins(
+    records: Iterable[object], *, probability_attr: str, actual_attr: str, bins: int = 10,
+) -> list[dict[str, float]]:
+    """Reliability bins for binary over/yes probabilities."""
+    if bins < 1:
+        raise ValueError("bins must be positive")
+    values = []
+    for record in records:
+        probability = getattr(record, probability_attr, None)
+        actual = getattr(record, actual_attr, None)
+        if probability is not None and actual in {"over", "under", "yes", "no"}:
+            values.append((float(probability), float(actual in {"over", "yes"})))
+    output = []
+    for index in range(bins):
+        lower, upper = index / bins, (index + 1) / bins
+        selected = [row for row in values if lower <= row[0] < upper or (index == bins - 1 and row[0] <= upper)]
+        if selected:
+            output.append({
+                "bin_lower": lower, "bin_upper": upper, "count": float(len(selected)),
+                "mean_probability": sum(row[0] for row in selected) / len(selected),
+                "empirical_frequency": sum(row[1] for row in selected) / len(selected),
+            })
+    return output
+
+
 def evaluate_market_benchmark(records: Iterable[object]) -> dict[str, float]:
     """Compute benchmark Log Loss and Brier Score from de-vigged market prices.
 

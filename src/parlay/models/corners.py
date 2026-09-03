@@ -9,6 +9,7 @@ from scipy.optimize import minimize
 from parlay.data.schemas import Match
 from parlay.models.poisson import poisson_pmf
 from parlay.models.negative_binomial import negative_binomial_pmf
+from parlay.models.numerics import DEFAULT_SCORE_CAP, poisson_tail
 
 
 @dataclass(frozen=True, slots=True)
@@ -19,7 +20,9 @@ class CornerStrengthModel:
     corner_attack: dict[str, float]
     corner_conceding: dict[str, float]
     dispersion: float = 20.0
-    max_corners: int = 20
+    max_corners: int | None = 20
+    fit_converged: bool = True
+    fit_warning: str | None = None
 
     def expected_corners(self, home_team: str, away_team: str) -> tuple[float, float]:
         """Return expected corner rates (lambda_home, lambda_away)."""
@@ -29,14 +32,20 @@ class CornerStrengthModel:
         conc_h = self.corner_conceding.get(home_team, 0.0)
 
         # Log rates with safety bounds
-        log_h = max(min(self.intercept + self.home_advantage + att_h + conc_a, 3.5), 0.5)
-        log_a = max(min(self.intercept + att_a + conc_h, 3.5), 0.5)
+        log_h = max(min(self.intercept + self.home_advantage + att_h + conc_a, 3.5), -3.0)
+        log_a = max(min(self.intercept + att_a + conc_h, 3.5), -3.0)
         return float(math.exp(log_h)), float(math.exp(log_a))
 
     def corner_matrix(self, home_team: str, away_team: str) -> np.ndarray:
         """Return joint probability matrix P(home_corners=i, away_corners=j)."""
         exp_h, exp_a = self.expected_corners(home_team, away_team)
-        grid = np.arange(self.max_corners + 1)
+        max_corners = self.max_corners
+        if max_corners is None:
+            max_corners = max(
+                _corner_support(exp_h, self.dispersion),
+                _corner_support(exp_a, self.dispersion),
+            )
+        grid = np.arange(max_corners + 1)
         if self.dispersion < 100.0:
             h_pmf = negative_binomial_pmf(grid, exp_h, self.dispersion)
             a_pmf = negative_binomial_pmf(grid, exp_a, self.dispersion)
@@ -48,13 +57,26 @@ class CornerStrengthModel:
         return matrix / total if total > 0 else matrix
 
 
+def _corner_support(rate: float, dispersion: float, epsilon: float = 1e-6) -> int:
+    if dispersion >= 100.0:
+        for cutoff in range(DEFAULT_SCORE_CAP + 1):
+            if poisson_tail(rate, cutoff) < epsilon:
+                return cutoff
+    cumulative = 0.0
+    for cutoff in range(DEFAULT_SCORE_CAP + 1):
+        cumulative += float(negative_binomial_pmf(np.array([cutoff]), rate, dispersion)[0])
+        if 1.0 - cumulative < epsilon:
+            return cutoff
+    return DEFAULT_SCORE_CAP
+
+
 def fit_corner_strength(
     matches: list[Match],
     *,
     half_life_days: float = 365.0,
     l2_reg: float = 0.02,
     dispersion: float = 15.0,
-    max_corners: int = 20,
+    max_corners: int | None = 20,
 ) -> CornerStrengthModel:
     """Fit corner attack and conceding strengths using weighted Poisson/NB MLE."""
     valid_matches = [
@@ -70,6 +92,8 @@ def fit_corner_strength(
             corner_conceding={},
             dispersion=dispersion,
             max_corners=max_corners,
+            fit_converged=False,
+            fit_warning="no completed corner observations; neutral fallback used",
         )
 
     teams = sorted({m.home_team for m in valid_matches} | {m.away_team for m in valid_matches})
@@ -147,6 +171,8 @@ def fit_corner_strength(
         corner_conceding={team: float(conc[i]) for team, i in team_idx.items()},
         dispersion=dispersion,
         max_corners=max_corners,
+        fit_converged=bool(res.success),
+        fit_warning=None if res.success else f"corner optimizer failed: {res.message}",
     )
 
 

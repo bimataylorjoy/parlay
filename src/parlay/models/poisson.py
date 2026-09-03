@@ -4,6 +4,13 @@ import math
 
 import numpy as np
 
+from .numerics import (
+    DEFAULT_SCORE_CAP,
+    DEFAULT_TRUNCATION_EPSILON,
+    adaptive_support,
+    poisson_tail,
+)
+
 
 def poisson_pmf(k: np.ndarray, rate: float) -> np.ndarray:
     if rate <= 0 or not math.isfinite(rate):
@@ -13,26 +20,15 @@ def poisson_pmf(k: np.ndarray, rate: float) -> np.ndarray:
     return np.exp(log_p)
 
 
-def _adaptive_max_goals(rate: float, epsilon: float = 1e-6, cap: int = 20) -> int:
+def _adaptive_max_goals(rate: float, epsilon: float = 1e-6, cap: int = DEFAULT_SCORE_CAP) -> int:
     """Smallest k with P(X>k) < epsilon for Poisson(rate). Cap for safety."""
     if rate <= 0 or not math.isfinite(rate):
         return 10
-    # Use survival quantile via incremental search (rate is small, cap 20 is fine)
-    from math import exp, lgamma
-    # Find via CDF: sum_{k=0..m} pmf >= 1-eps
-    # Simple loop
-    cum = 0.0
-    for m in range(cap + 1):
-        # pmf via log
-        log_p = m * math.log(rate) - rate - math.lgamma(m + 1)
-        cum += math.exp(log_p)
-        if 1.0 - cum < epsilon:
-            return m
-    return cap
+    return adaptive_support(rate, epsilon, cap)[0]
 
 
 def score_matrix(
-    home_rate: float, away_rate: float, max_goals: int | None = 10, *, epsilon: float = 1e-6
+    home_rate: float, away_rate: float, max_goals: int | None = 10, *, epsilon: float = DEFAULT_TRUNCATION_EPSILON
 ) -> np.ndarray:
     """Return P(home goals, away goals), with adaptive truncation (ε=1e-6).
 
@@ -46,8 +42,7 @@ def score_matrix(
         # Adaptive: use max of both rates
         k_home = _adaptive_max_goals(home_rate, epsilon)
         k_away = _adaptive_max_goals(away_rate, epsilon)
-        max_goals = max(k_home, k_away, 10)
-        max_goals = min(max_goals, 20)
+        max_goals = min(max(k_home, k_away), DEFAULT_SCORE_CAP)
     goals = np.arange(max_goals + 1)
     matrix = np.outer(poisson_pmf(goals, home_rate), poisson_pmf(goals, away_rate))
     total = matrix.sum()
@@ -57,25 +52,17 @@ def score_matrix(
 
 
 def score_matrix_with_metadata(
-    home_rate: float, away_rate: float, max_goals: int | None = 10, *, epsilon: float = 1e-6
+    home_rate: float, away_rate: float, max_goals: int | None = 10, *, epsilon: float = DEFAULT_TRUNCATION_EPSILON
 ) -> tuple[np.ndarray, dict[str, float]]:
     """Return (matrix, metadata) with tail_mass diagnostics."""
     if max_goals is None:
         k_home = _adaptive_max_goals(home_rate, epsilon)
         k_away = _adaptive_max_goals(away_rate, epsilon)
-        max_goals = max(k_home, k_away, 10)
-        max_goals = min(max_goals, 20)
-    else:
-        # still compute tail for diagnostics
-        pass
+        max_goals = min(max(k_home, k_away), DEFAULT_SCORE_CAP)
     # Compute tail mass before truncation
     # Poisson tail P(X > max_goals)
     def tail(rate: float, k: int) -> float:
-        # 1 - CDF(k)
-        s = 0.0
-        for i in range(k + 1):
-            s += math.exp(i * math.log(rate) - rate - math.lgamma(i + 1))
-        return max(0.0, 1.0 - s)
+        return poisson_tail(rate, k)
 
     tail_home = tail(home_rate, max_goals) if max_goals is not None else 0.0
     tail_away = tail(away_rate, max_goals) if max_goals is not None else 0.0

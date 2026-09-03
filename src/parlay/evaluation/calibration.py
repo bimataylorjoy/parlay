@@ -125,9 +125,10 @@ def temporally_safe_calibration(
         test = rows[n - n_test :]
         # Ensure disjoint by timestamp (already sorted)
         if calibrate and test:
-            assert max(getattr(r, "forecast_timestamp") for r in calibrate) < min(
+            if max(getattr(r, "forecast_timestamp") for r in calibrate) >= min(
                 getattr(r, "forecast_timestamp") for r in test
-            ), "calibrate and test must be disjoint"
+            ):
+                raise ValueError("calibrate and test must be disjoint")
     T_opt = find_optimal_temperature(calibrate)
     calibrated_test = apply_calibration(test, T_opt)
     # Metrics per market (1X2 only for now; O/U, BTTS, corners can be added similarly)
