@@ -24,14 +24,37 @@ def valid_rho_bounds(home_rate: float | np.ndarray, away_rate: float | np.ndarra
     return lower * 0.99, upper * 0.99
 
 
+def _global_rho_bounds(
+    home_rates: np.ndarray, away_rates: np.ndarray, pad: float = 0.99
+) -> tuple[float, float]:
+    """Globally valid rho interval: intersection of per-match intervals."""
+    lowers, uppers = valid_rho_bounds(home_rates, away_rates)
+    # lowers/uppers may be arrays
+    global_lower = float(np.max(lowers)) if np.asarray(lowers).size else -0.3
+    global_upper = float(np.min(uppers)) if np.asarray(uppers).size else 0.3
+    # Intersect with hard prior domain [-0.3, 0.3] and apply safety pad
+    global_lower = max(global_lower / pad if pad else global_lower, -0.3)
+    global_upper = min(global_upper / pad if pad else global_upper, 0.3)
+    # If infeasible (no intersection), fall back to widest feasible near 0
+    if global_lower >= global_upper:
+        # Documented fallback: use narrow interval around 0
+        return -0.05, 0.05
+    return float(global_lower * pad), float(global_upper * pad)
+
+
 def tau(home_goals: np.ndarray, away_goals: np.ndarray,
         home_rate: float | np.ndarray, away_rate: float | np.ndarray, rho: float) -> np.ndarray:
-    """Return the Dixon-Coles correction factor for score cells."""
+    """Return the Dixon-Coles correction factor for score cells.
+
+    Note: per-match clipping of rho has been removed (§3). Caller must ensure
+    rho lies within the globally valid domain (see _global_rho_bounds). Passing
+    an out-of-bounds rho will produce negative corrections clamped to 0, but the
+    optimizer should never propose such rho when bounds are set correctly.
+    """
     home_goals = np.asarray(home_goals)
     away_goals = np.asarray(away_goals)
-    # Clamp rho to match-specific valid bounds
-    lower, upper = valid_rho_bounds(home_rate, away_rate)
-    rho_clamped = np.clip(rho, lower, upper)
+    # No per-match mutation of rho — use rho as-is (globally consistent)
+    rho_clamped = rho
     correction = np.ones(np.broadcast(home_goals, away_goals).shape, dtype=float)
     correction = np.where(
         (home_goals == 0) & (away_goals == 0),

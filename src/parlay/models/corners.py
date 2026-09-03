@@ -111,9 +111,23 @@ def fit_corner_strength(
         lam_h = np.exp(log_lambda_h)
         lam_a = np.exp(log_lambda_a)
 
-        # Poisson log-likelihood
-        ll_h = weights * (h_corn * log_lambda_h - lam_h)
-        ll_a = weights * (a_corn * log_lambda_a - lam_a)
+        # Likelihood: Poisson if dispersion>=100, else NB2 joint (§12 audit)
+        if dispersion >= 100.0:
+            ll_h = weights * (h_corn * log_lambda_h - lam_h)
+            ll_a = weights * (a_corn * log_lambda_a - lam_a)
+        else:
+            # NB2 log pmf joint (§7)
+            import math as _math
+            phi = float(dispersion)
+            # NB ll per observation
+            def nb_ll(k, mu_vec):
+                phi_arr = np.full_like(mu_vec, phi, dtype=float)
+                lg1 = np.vectorize(_math.lgamma)(k + phi_arr)
+                lg2 = _math.lgamma(phi)
+                lg3 = np.vectorize(_math.lgamma)(k + 1)
+                return lg1 - lg2 - lg3 + phi_arr * np.log(phi_arr / (phi_arr + mu_vec)) + k * np.log(mu_vec / (phi_arr + mu_vec))
+            ll_h = weights * nb_ll(h_corn, lam_h)
+            ll_a = weights * nb_ll(a_corn, lam_a)
 
         reg = l2_reg * (np.sum(att**2) + np.sum(conc**2))
         return -float(np.sum(ll_h) + np.sum(ll_a)) + reg

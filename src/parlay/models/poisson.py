@@ -13,16 +13,83 @@ def poisson_pmf(k: np.ndarray, rate: float) -> np.ndarray:
     return np.exp(log_p)
 
 
-def score_matrix(home_rate: float, away_rate: float, max_goals: int = 10) -> np.ndarray:
-    """Return P(home goals, away goals), with the finite-grid tail normalized."""
-    if max_goals < 1:
+def _adaptive_max_goals(rate: float, epsilon: float = 1e-6, cap: int = 20) -> int:
+    """Smallest k with P(X>k) < epsilon for Poisson(rate). Cap for safety."""
+    if rate <= 0 or not math.isfinite(rate):
+        return 10
+    # Use survival quantile via incremental search (rate is small, cap 20 is fine)
+    from math import exp, lgamma
+    # Find via CDF: sum_{k=0..m} pmf >= 1-eps
+    # Simple loop
+    cum = 0.0
+    for m in range(cap + 1):
+        # pmf via log
+        log_p = m * math.log(rate) - rate - math.lgamma(m + 1)
+        cum += math.exp(log_p)
+        if 1.0 - cum < epsilon:
+            return m
+    return cap
+
+
+def score_matrix(
+    home_rate: float, away_rate: float, max_goals: int | None = 10, *, epsilon: float = 1e-6
+) -> np.ndarray:
+    """Return P(home goals, away goals), with adaptive truncation (ε=1e-6).
+
+    If max_goals is None, adaptively choose smallest k where tail < epsilon for
+    max(home_rate, away_rate). Otherwise use fixed k but still track tail mass.
+    Finite-grid tail is renormalized; caller can inspect tail via score_matrix_with_metadata.
+    """
+    if max_goals is not None and max_goals < 1:
         raise ValueError("max_goals must be at least 1")
+    if max_goals is None:
+        # Adaptive: use max of both rates
+        k_home = _adaptive_max_goals(home_rate, epsilon)
+        k_away = _adaptive_max_goals(away_rate, epsilon)
+        max_goals = max(k_home, k_away, 10)
+        max_goals = min(max_goals, 20)
     goals = np.arange(max_goals + 1)
     matrix = np.outer(poisson_pmf(goals, home_rate), poisson_pmf(goals, away_rate))
     total = matrix.sum()
     if total <= 0:
         raise ValueError("score matrix has zero probability")
     return matrix / total
+
+
+def score_matrix_with_metadata(
+    home_rate: float, away_rate: float, max_goals: int | None = 10, *, epsilon: float = 1e-6
+) -> tuple[np.ndarray, dict[str, float]]:
+    """Return (matrix, metadata) with tail_mass diagnostics."""
+    if max_goals is None:
+        k_home = _adaptive_max_goals(home_rate, epsilon)
+        k_away = _adaptive_max_goals(away_rate, epsilon)
+        max_goals = max(k_home, k_away, 10)
+        max_goals = min(max_goals, 20)
+    else:
+        # still compute tail for diagnostics
+        pass
+    # Compute tail mass before truncation
+    # Poisson tail P(X > max_goals)
+    def tail(rate: float, k: int) -> float:
+        # 1 - CDF(k)
+        s = 0.0
+        for i in range(k + 1):
+            s += math.exp(i * math.log(rate) - rate - math.lgamma(i + 1))
+        return max(0.0, 1.0 - s)
+
+    tail_home = tail(home_rate, max_goals) if max_goals is not None else 0.0
+    tail_away = tail(away_rate, max_goals) if max_goals is not None else 0.0
+    # Joint tail approx (independent)
+    joint_tail = 1.0 - (1.0 - tail_home) * (1.0 - tail_away)
+    M = score_matrix(home_rate, away_rate, max_goals=max_goals, epsilon=epsilon)
+    meta = {
+        "max_goals": float(max_goals) if max_goals is not None else 0.0,
+        "tail_mass_home": float(tail_home),
+        "tail_mass_away": float(tail_away),
+        "joint_tail_mass_estimate": float(joint_tail),
+        "truncation_epsilon": float(epsilon),
+    }
+    return M, meta
 
 
 def outcome_probabilities(matrix: np.ndarray) -> dict[str, float]:

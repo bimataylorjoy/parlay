@@ -53,21 +53,13 @@ def fit_poisson_bayesian(
         intercept = pm.Normal("intercept", mu=1.0, sigma=0.5)
         home_advantage = pm.Normal("home_advantage", mu=0.25, sigma=0.2)
         
-        # Free parameters for teams 0 to n_teams-2
-        attack_free = pm.Normal("attack_free", mu=0.0, sigma=0.5, shape=n_teams - 1)
-        defense_free = pm.Normal("defense_free", mu=0.0, sigma=0.5, shape=n_teams - 1)
-        
-        # Constrain the last team to make the sum exactly zero
-        attack_last = pm.Deterministic("attack_last", -pt.sum(attack_free))
-        defense_last = pm.Deterministic("defense_last", -pt.sum(defense_free))
-        
-        # Full vectors
-        attack = pt.concatenate([attack_free, pt.stack([attack_last])])
-        defense = pt.concatenate([defense_free, pt.stack([defense_last])])
-        
-        # Save deterministic full vectors for trace
-        pm.Deterministic("attack", attack)
-        pm.Deterministic("defense", defense)
+        # Exchangeable priors for all teams (§6) — then center
+        attack_raw = pm.Normal("attack_raw", mu=0.0, sigma=0.5, shape=n_teams)
+        defense_raw = pm.Normal("defense_raw", mu=0.0, sigma=0.5, shape=n_teams)
+        attack = pm.Deterministic("attack", attack_raw - pt.mean(attack_raw))
+        defense = pm.Deterministic("defense", defense_raw - pt.mean(defense_raw))
+        # Keep legacy free names for backward compat traces (optional)
+        # attack_free/defense_free no longer used; attack/defense are now exchangeable
         
         # Log expected goals
         home_log = intercept + home_advantage + attack[home_idx] - defense[away_idx]
