@@ -29,3 +29,11 @@ def test_reingest_updates_match_without_deleting_children():
     db.insert_matches([Match("m1", date(2024, 1, 2), "league", "2024", "A", "B", 2, 1)])
     assert db.load_matches()[0].home_goals == 2
     assert len(db.load_odds(match_id="m1")) == 1
+
+
+def test_database_stores_information_snapshots():
+    db = ResearchDatabase()
+    db.insert_matches([Match("m1", date(2024, 1, 2), "league", "2024", "A", "B", 1, 0)])
+    available = datetime(2024, 1, 1, 12, tzinfo=timezone.utc)
+    db.insert_information_snapshot("m1", "injuries", "sportmonks", available, '{"player":"p1"}')
+    assert len(db.information_as_of("m1", available)) == 1

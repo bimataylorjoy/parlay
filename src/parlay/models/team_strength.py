@@ -36,6 +36,8 @@ class TeamStrengthModel:
     fit_negative_log_likelihood: float | None = None
     fit_warning: str | None = None
     posterior: object | None = None
+    historical_matches: dict[str, int] | None = None
+    shrinkage_weight: float = 1.0
 
     def expected_goals(self, home_team: str, away_team: str, neutral: bool = False) -> tuple[float, float]:
         if home_team not in self.attack or away_team not in self.attack:
@@ -81,6 +83,7 @@ def fit_team_strength(
     max_goals: int | None = 10,
     sot_weight: float = 0.0,
     sot_conversion_rate: float = 0.31,
+    early_season_shrinkage: float = 0.0,
 ) -> TeamStrengthModel:
     """Fit relative attack/defence strengths using MLE, heuristic, or Bayesian.
 
@@ -114,6 +117,8 @@ def fit_team_strength(
         raise ValueError("dispersion must be positive")
     if not 0.0 <= sot_weight <= 1.0:
         raise ValueError("sot_weight must be between 0.0 and 1.0")
+    if not 0.0 <= early_season_shrinkage <= 1.0:
+        raise ValueError("early_season_shrinkage must be between 0.0 and 1.0")
     if not rows:
         raise ValueError("at least one match is required")
 
@@ -125,7 +130,7 @@ def fit_team_strength(
         (row.match_id, row.date.isoformat(), row.home_goals, row.away_goals)
         for row in rows
     )
-    cache_key_raw = f"{reference}|{half_life_days}|{model}|{estimator}|{l2_reg}|{rho}|{dispersion}|{max_goals}|{match_fingerprint}"
+    cache_key_raw = f"{reference}|{half_life_days}|{model}|{estimator}|{l2_reg}|{rho}|{dispersion}|{max_goals}|{sot_weight}|{sot_conversion_rate}|{early_season_shrinkage}|{match_fingerprint}"
     cache_key = hashlib.sha256(cache_key_raw.encode()).hexdigest()[:16]
     if cache_key in _FIT_CACHE and max_goals == _FIT_CACHE[cache_key].max_goals:
         return _FIT_CACHE[cache_key]
@@ -302,6 +307,15 @@ def fit_team_strength(
         fitted_home_disp = dispersion if dispersion is not None else 10.0
         fitted_away_disp = dispersion if dispersion is not None else 10.0
 
+    if early_season_shrinkage:
+        # Early-season team estimates are intentionally blended toward a
+        # neutral league baseline; two matches cannot identify stable strength.
+        weight = 1.0 - early_season_shrinkage
+        attack = np.asarray(attack) * weight
+        defense = np.asarray(defense) * weight
+        intercept = intercept * weight + math.log(1.35) * (1.0 - weight)
+        home_advantage = home_advantage * weight + 0.20 * (1.0 - weight)
+
     result = TeamStrengthModel(
         teams=teams,
         attack={team: float(attack[i]) for i, team in enumerate(teams)},
@@ -317,6 +331,11 @@ def fit_team_strength(
         fit_negative_log_likelihood=fit_nll,
         fit_warning=fit_warning,
         posterior=posterior,
+        historical_matches={
+            team: sum(1 for row in rows if row.home_team == team or row.away_team == team)
+            for team in teams
+        },
+        shrinkage_weight=1.0 - early_season_shrinkage,
     )
     _FIT_CACHE[cache_key] = result
     return result

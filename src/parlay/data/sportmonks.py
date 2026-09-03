@@ -6,10 +6,25 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from .schemas import Match, OddsSnapshot
+from .market_information import InjuryReport, LineupStatus, TeamNews
 from .normalization import canonical_team_name
 
 
 BASE_URL = "https://api.sportmonks.com/v3/football"
+
+
+def _get_json(token: str, path: str, *, include: str | None = None, timeout: int = 30) -> dict:
+    if not token.strip():
+        raise ValueError("Sportmonks token must not be empty")
+    params = {"api_token": token}
+    if include:
+        params["include"] = include
+    request = Request(
+        f"{BASE_URL}/{path.lstrip('/')}?{urlencode(params)}",
+        headers={"Accept": "application/json", "User-Agent": "parlay-research/0.1"},
+    )
+    with urlopen(request, timeout=timeout) as response:
+        return json.load(response)
 
 
 def fetch_fixtures_with_odds(token: str, dates: tuple[date, ...], *, league_id: int = 8) -> list[dict]:
@@ -17,12 +32,100 @@ def fetch_fixtures_with_odds(token: str, dates: tuple[date, ...], *, league_id: 
         raise ValueError("Sportmonks token must not be empty")
     fixtures: list[dict] = []
     for match_date in dates:
-        query = urlencode({"api_token": token, "include": "participants;odds"})
-        request = Request(f"{BASE_URL}/fixtures/date/{match_date.isoformat()}?{query}", headers={"Accept": "application/json"})
-        with urlopen(request, timeout=30) as response:
-            payload = json.load(response)
+        payload = _get_json(token, f"fixtures/date/{match_date.isoformat()}", include="participants;odds")
         fixtures.extend(row for row in payload.get("data", []) if row.get("league_id") == league_id)
     return fixtures
+
+
+def fetch_fixture_enrichment(token: str, fixture_id: int | str) -> dict:
+    """Fetch timestamped pre-match information for one fixture.
+
+    The raw response is retained so provider-specific fields are not lost.
+    """
+    return _get_json(
+        token,
+        f"fixtures/{fixture_id}",
+        include="participants;lineups;predictedLineups;sidelined.sideline;sidelined.player;prematchNews;odds",
+    ).get("data", {})
+
+
+def _parse_available(value: str | datetime | None, fallback: datetime) -> datetime:
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if isinstance(value, str) and value:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return fallback
+
+
+def parse_fixture_information(fixture: dict, *, source: str = "sportmonks") -> dict[str, list[object]]:
+    """Convert known enrichment entities into timestamp-aware domain objects.
+
+    Sportmonks payload shapes can vary by subscription. Unknown/missing fields
+    are ignored rather than fabricated.
+    """
+    kickoff = datetime.fromisoformat(fixture["starting_at"].replace("Z", "+00:00"))
+    published_default = kickoff
+    output: dict[str, list[object]] = {"lineups": [], "injuries": [], "news": []}
+    for row in fixture.get("lineups", []) or []:
+        participant = row.get("team_id") or row.get("team", {}).get("id")
+        team = str(participant) if participant is not None else str(row.get("team_name", "unknown"))
+        published = _parse_available(row.get("updated_at") or row.get("created_at"), published_default)
+        output["lineups"].append(LineupStatus(
+            match_id=f"sportmonks:{fixture['id']}", team=team,
+            status=str(row.get("type", row.get("confirmed", "unknown"))), source=source,
+            published_at=published, available_at=published,
+            player_ids=tuple(str(p.get("player_id", p.get("id"))) for p in row.get("players", []) if p.get("player_id", p.get("id")) is not None),
+        ))
+    for row in fixture.get("sidelined", []) or []:
+        player = row.get("player", {}) or {}
+        team = row.get("team_id") or row.get("team", {}).get("id") or "unknown"
+        published = _parse_available(row.get("updated_at") or row.get("created_at"), published_default)
+        output["injuries"].append(InjuryReport(
+            team=str(team), player_id=str(player.get("id", row.get("player_id", "unknown"))),
+            status=str((row.get("sideline") or {}).get("type", row.get("type", "unknown"))),
+            source=source, published_at=published, available_at=published,
+            expected_return=(row.get("sideline") or {}).get("expected_return"),
+        ))
+    for row in fixture.get("prematchNews", []) or []:
+        published = _parse_available(row.get("published_at") or row.get("created_at"), published_default)
+        output["news"].append(TeamNews(
+            team=str(row.get("team_id", "match")), category="prematch_news",
+            status=str(row.get("title", row.get("type", "published"))), source=source,
+            published_at=published, available_at=published, note=row.get("description", row.get("content")),
+        ))
+    return output
+
+
+def fetch_premium_odds_history(
+    token: str, fixture_id: int | str, bookmaker_id: int | str,
+) -> dict:
+    """Fetch premium pre-match odds and provider update history."""
+    return _get_json(
+        token,
+        f"odds/premium/fixtures/{fixture_id}/bookmakers/{bookmaker_id}",
+        include="history",
+    ).get("data", {})
+
+
+def premium_odds_snapshots(
+    payload: dict, *, match_id: str | None = None, bookmaker: str = "sportmonks",
+) -> list[OddsSnapshot]:
+    """Normalize premium odds history into immutable timestamped snapshots."""
+    snapshots: list[OddsSnapshot] = []
+    match_id = match_id or f"sportmonks:{payload.get('fixture_id', payload.get('fixture', 'unknown'))}"
+    for odd in payload.get("odds", payload.get("data", [])) or []:
+        selection = odd.get("label") or odd.get("name") or odd.get("selection")
+        value = odd.get("value") or odd.get("odds")
+        captured = odd.get("latest_bookmaker_update") or odd.get("created_at") or odd.get("captured_at")
+        if selection is None or value is None or captured is None:
+            continue
+        snapshots.append(OddsSnapshot(
+            match_id=match_id, bookmaker=bookmaker, market=str(odd.get("market_description", odd.get("market", "unknown"))),
+            selection=str(selection), odds=float(value),
+            captured_at=datetime.fromisoformat(str(captured).replace("Z", "+00:00")),
+            is_closing=bool(odd.get("is_closing", False)),
+        ))
+    return snapshots
 
 
 def fixture_to_match(fixture: dict, *, competition: str = "EPL", season: str = "2026-27") -> Match:

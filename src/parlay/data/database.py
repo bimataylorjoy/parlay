@@ -55,6 +55,15 @@ CREATE TABLE IF NOT EXISTS feature_snapshots (
     PRIMARY KEY (match_id, as_of, feature_set)
 );
 
+CREATE TABLE IF NOT EXISTS information_snapshots (
+    match_id TEXT NOT NULL REFERENCES matches(match_id),
+    kind TEXT NOT NULL,
+    source TEXT NOT NULL,
+    available_at TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    PRIMARY KEY (match_id, kind, source, available_at)
+);
+
 CREATE TABLE IF NOT EXISTS predictions (
     match_id TEXT NOT NULL REFERENCES matches(match_id),
     forecast_timestamp TEXT NOT NULL,
@@ -187,6 +196,26 @@ class ResearchDatabase:
             (match_id, _dt(as_of), feature_set, values_json),
         )
         self.connection.commit()
+
+    def insert_information_snapshot(
+        self, match_id: str, kind: str, source: str, available_at: datetime,
+        payload_json: str,
+    ) -> None:
+        """Persist raw enrichment without making it part of model inputs."""
+        self.connection.execute(
+            """INSERT OR REPLACE INTO information_snapshots
+            (match_id, kind, source, available_at, payload_json)
+            VALUES (?, ?, ?, ?, ?)""",
+            (match_id, kind, source, _dt(available_at), payload_json),
+        )
+        self.connection.commit()
+
+    def information_as_of(self, match_id: str, as_of: datetime) -> list[sqlite3.Row]:
+        return list(self.connection.execute(
+            """SELECT * FROM information_snapshots
+            WHERE match_id = ? AND available_at <= ? ORDER BY available_at""",
+            (match_id, _dt(as_of)),
+        ))
 
     def matches_as_of(self, as_of: date) -> list[sqlite3.Row]:
         """Return matches whose result was known by the supplied date."""

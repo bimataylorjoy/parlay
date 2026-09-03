@@ -22,6 +22,8 @@ def diagnose(
     calibration_error: float | None = None,
     n_historical: int | None = None,
     is_promoted: bool = False,
+    lambda_total: float | None = None,
+    data_missing: bool = False,
 ) -> DecisionDiagnostics:
     flags: list[str] = []
     disagreement = abs(model_probability - market_probability) if market_probability is not None else None
@@ -35,8 +37,10 @@ def diagnose(
         flags.append("insufficient_historical_sample")
     if is_promoted:
         flags.append("promoted_new_team_uncertainty")
-    if model_probability < 0.1 or model_probability > 0.9:
+    if lambda_total is not None and (lambda_total < 0.5 or lambda_total > 5.0):
         flags.append("extreme_lambda")
+    if data_missing:
+        flags.append("data_missingness")
 
     # Uncertainty level
     if "wide_posterior_uncertainty" in flags or "insufficient_historical_sample" in flags:

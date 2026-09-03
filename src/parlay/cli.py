@@ -84,6 +84,7 @@ def build_parser() -> argparse.ArgumentParser:
     predict.add_argument("--kelly-fraction", type=float, default=0.25, help="Kelly multiplier (e.g. 0.25 for quarter Kelly)")
     predict.add_argument("--max-stake", type=float, default=0.005, help="Maximum bankroll fraction per selection")
     predict.add_argument("--min-ev", type=float, default=0.02, help="Minimum expected value required for a recommendation")
+    predict.add_argument("--early-season-shrinkage", type=float, default=0.75, help="Shrink early-season team strengths toward league average")
     predict.add_argument("--output", type=Path, help="Optional CSV output for auditable predictions")
     sync = commands.add_parser("sync-sportmonks", help="sync upcoming EPL fixtures and totals odds")
     sync.add_argument("--database", default="data/parlay.sqlite")
@@ -189,7 +190,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "sync-sportmonks":
         import os
         from datetime import date
-        from parlay.data.sportmonks import fetch_fixtures_with_odds, extract_totals_25, fixture_to_match, totals_to_odds
+        from parlay.data.sportmonks import fetch_fixtures_with_odds, extract_totals_25, fixture_to_match, totals_to_odds, fetch_fixture_enrichment, parse_fixture_information
+        import json
         token = args.token or os.environ.get("SPORTMONKS_API_TOKEN")
         if not token:
             raise SystemExit("Set SPORTMONKS_API_TOKEN or provide --token")
@@ -209,6 +211,18 @@ def main(argv: list[str] | None = None) -> int:
             odds_rows.extend(totals_to_odds(fixture, totals, bookmaker=f"sportmonks:{args.bookmaker_id}"))
         database.insert_future_matches(match_rows)
         database.insert_odds(odds_rows)
+        for fixture in fixtures:
+            match_id = f"sportmonks:{fixture['id']}"
+            try:
+                enrichment = parse_fixture_information(fetch_fixture_enrichment(token, fixture["id"]))
+            except (OSError, ValueError, KeyError):
+                continue
+            for kind, values in enrichment.items():
+                for value in values:
+                    database.insert_information_snapshot(
+                        match_id, kind, value.source, value.available_at,
+                        json.dumps(value.__dict__ if hasattr(value, "__dict__") else str(value), default=str, sort_keys=True),
+                    )
         print(f"Synced {len(match_rows)} fixtures and {len(odds_rows)} totals odds snapshots")
         return 0
 
@@ -370,7 +384,7 @@ def main(argv: list[str] | None = None) -> int:
             fitted = fit_team_strength(
                 available_matches, model=args.model, estimator=args.estimator,
                 as_of=fixture_date, half_life_days=args.half_life_days,
-                sot_weight=args.sot_weight,
+                sot_weight=args.sot_weight, early_season_shrinkage=args.early_season_shrinkage,
             )
             
             if home not in fitted.teams or away not in fitted.teams:
@@ -484,7 +498,11 @@ def main(argv: list[str] | None = None) -> int:
                     # raw implied without de-vig as proxy; for true use implied_probabilities
                     mkt_home_p = 1.0/float(row["B365H"])
             except: pass
-            diag = diagnose(p_1, mkt_home_p, n_historical=n_hist, is_promoted=is_promoted)
+            diag = diagnose(
+                p_1, mkt_home_p, n_historical=n_hist, is_promoted=is_promoted,
+                lambda_total=exp_hg + exp_ag,
+                data_missing=not bool(row.get("B365H") and row.get("B365D") and row.get("B365A")),
+            )
             anomaly_note = f" | {diag.decision} {','.join(diag.anomaly_flags) if diag.anomaly_flags else 'ok'}" if diag.decision != "PASS" or diag.anomaly_flags else ""
             print(f"{date_str:<10} | {home_raw:<15} vs {away_raw:<15} | {p_1*100:>4.1f}% {p_x*100:>4.1f}% {p_2*100:>4.1f}% | {p_o*100:>4.1f}% {p_u*100:>4.1f}% | {bet_str}{anomaly_note}")
             # Build comprehensive output row with fair odds for manual comparison

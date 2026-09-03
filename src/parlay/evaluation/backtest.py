@@ -138,6 +138,7 @@ def run_backtest_full(
     calibration_records: list[PredictionRecord] | None = None,
     evaluation_start: str | None = None,
     evaluation_end: str | None = None,
+    early_season_shrinkage: float = 0.0,
 ) -> BacktestResult:
     if forecast_lead_minutes < 0:
         raise ValueError("forecast_lead_minutes must be non-negative")
@@ -162,6 +163,7 @@ def run_backtest_full(
         fitted = fit_team_strength(
             list(fold.train), model=model, estimator=estimator, as_of=fold.train_end,
             half_life_days=half_life_days, max_goals=max_goals, sot_weight=sot_weight,
+            early_season_shrinkage=early_season_shrinkage,
         )
         for match in fold.test:
             if match.home_team not in fitted.teams or match.away_team not in fitted.teams:

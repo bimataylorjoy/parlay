@@ -40,6 +40,11 @@ def test_anomaly_extreme_disagreement():
     assert "wide_posterior_uncertainty" in d2.anomaly_flags
 
 
+def test_anomaly_extreme_lambda_uses_rate_not_probability():
+    d = diagnose(0.6, 0.55, lambda_total=7.0)
+    assert "extreme_lambda" in d.anomaly_flags
+
+
 def test_regime_analysis():
     class R:
         def __init__(self, team, prob, actual):

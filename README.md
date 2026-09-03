@@ -256,6 +256,20 @@ Ingestion is **append-only** with `ON CONFLICT(match_id) DO UPDATE` `src/parlay/
 * **Strategy** `evaluate_flat_stake(min_edge 0.03, min_ev 0.02)` + Pinnacle closing baseline `src/parlay/evaluation/backtest.py:166`.
 * **Parlays and information** `src/parlay/prediction/parlay.py` calculates joint leg probabilities from the score matrix; `src/parlay/data/market_information.py` requires declared publication/availability timestamps for team news, lineups, injuries, and odds movement. No external feed is assumed or silently treated as reliable.
 
+### Sportmonks enrichment
+
+Set `SPORTMONKS_API_TOKEN` or pass `--token` to `sync-sportmonks`. The adapter uses the official v3 Football API for:
+
+* fixtures and participants;
+* `lineups` and `predictedLineups`;
+* `sidelined.sideline` and `sidelined.player`;
+* `prematchNews`;
+* premium odds history with `include=history`.
+
+Enrichment is stored as timestamped audit data in the `information_snapshots` table. Only records whose provider-declared `available_at` is no later than the forecast cutoff may be used by a future feature integration. Missing subscription fields are ignored and never replaced with invented lineup, injury, or news values.
+
+Sportmonks premium odds history is a price-update history. It is not a full order book, traded volume, or authenticated bookmaker order flow. The project therefore labels it as market movement evidence and does not treat it as causal signal without separate validation.
+
 ---
 
 ## Project Structure
