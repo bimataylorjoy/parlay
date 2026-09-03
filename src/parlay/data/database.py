@@ -195,8 +195,13 @@ class ResearchDatabase:
             (_dt(as_of),),
         ))
 
-    def load_matches(self, *, as_of: date | None = None) -> list[Match]:
-        """Rehydrate domain matches from the normalized database tables."""
+    def load_matches(self, *, as_of: date | datetime | None = None, information_set=None) -> list[Match]:
+        """Rehydrate domain matches. Supports legacy `as_of: date` or `InformationSet`."""
+        # Backward compat: if information_set provided, use it to filter knowable results
+        if information_set is not None:
+            # Load all then filter via InformationSet (centralized eligibility)
+            all_matches = self.load_matches()
+            return information_set.filter_knowable(all_matches)
         query = """SELECT m.*, h.canonical_name AS home_name,
                    a.canonical_name AS away_name
                    FROM matches m
@@ -204,8 +209,15 @@ class ResearchDatabase:
                    JOIN teams a ON a.team_id = m.away_team_id"""
         params: tuple[object, ...] = ()
         if as_of is not None:
-            query += " WHERE m.match_date <= ?"
-            params = (_dt(as_of),)
+            # If as_of is datetime, filter via kickoff_aware logic conservatively via date
+            if isinstance(as_of, datetime):
+                # For datetime, still filter by date <= as_of.date() as conservative pre-filter,
+                # then caller should apply InformationSet for exact kickoff+lag
+                query += " WHERE m.match_date <= ?"
+                params = (_dt(as_of.date()),)
+            else:
+                query += " WHERE m.match_date <= ?"
+                params = (_dt(as_of),)
         query += " ORDER BY m.match_date, m.match_id"
         rows = self.connection.execute(query, params)
         return [Match(

@@ -63,6 +63,7 @@ class BacktestResult:
     records: list[PredictionRecord]
     metrics: dict[str, float]
     fold_metrics: list[FoldMetrics]
+    metadata: dict[str, object] | None = None
 
 
 def _forecast_market_odds(
@@ -129,14 +130,20 @@ def run_backtest_full(
     forecast_lead_minutes: int = 60,
     strategy_min_edge: float = 0.03,
     strategy_min_ev: float = 0.02,
+    evaluation_mode: str = "rolling_origin",
+    calibration_mode: str | None = None,
 ) -> BacktestResult:
     if forecast_lead_minutes < 0:
         raise ValueError("forecast_lead_minutes must be non-negative")
+    if evaluation_mode not in ("rolling_origin", "fixed_origin"):
+        raise ValueError("evaluation_mode must be rolling_origin or fixed_origin")
     folds = expanding_window(
         matches,
         initial_train_days=initial_train_days,
         test_days=test_days,
         step_days=step_days,
+        mode=evaluation_mode,
+        forecast_lead_minutes=forecast_lead_minutes,
     )
     records: list[PredictionRecord] = []
     fold_metrics_list: list[FoldMetrics] = []
@@ -222,4 +229,10 @@ def run_backtest_full(
             ))
     metrics = aggregate_scores(asdict(record) for record in records)
     metrics["folds"] = float(len(folds))
-    return BacktestResult(records=records, metrics=metrics, fold_metrics=fold_metrics_list)
+    metadata = {
+        "evaluation_mode": evaluation_mode,
+        "forecast_timestamp_policy": f"kickoff_minus_{forecast_lead_minutes}m",
+        "model_update_frequency": "per_fold" if evaluation_mode == "rolling_origin" else "fixed_origin",
+        "calibration_mode": calibration_mode,
+    }
+    return BacktestResult(records=records, metrics=metrics, fold_metrics=fold_metrics_list, metadata=metadata)

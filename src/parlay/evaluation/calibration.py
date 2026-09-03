@@ -91,3 +91,46 @@ def apply_calibration(records: Iterable[object], temperature: float) -> list[dic
         scaled_records.append(d)
         
     return scaled_records
+
+
+def temporally_safe_calibration(
+    records: Iterable[object],
+    *,
+    train_end: str | None = None,
+    calibrate_end: str | None = None,
+) -> tuple[float, list[dict[str, object]], dict[str, float]]:
+    """Fit T on calibrate window, evaluate on test window (disjoint, §13).
+
+    Expects records sorted by forecast_timestamp. If train_end/calibrate_end
+    not provided, does 60/20/20 split chronologically.
+    Returns (T_opt, calibrated_test_records, test_metrics).
+    """
+    from datetime import datetime
+
+    rows = sorted(list(records), key=lambda r: getattr(r, "forecast_timestamp"))
+    n = len(rows)
+    if n < 10:
+        raise ValueError("not enough records for temporally safe calibration (need >=10)")
+    if train_end and calibrate_end:
+        # Filter by timestamp strings
+        calibrate = [r for r in rows if train_end < getattr(r, "forecast_timestamp") <= calibrate_end]
+        test = [r for r in rows if getattr(r, "forecast_timestamp") > calibrate_end]
+        if not calibrate or not test:
+            raise ValueError("calibrate/test windows empty — check timestamps")
+    else:
+        # 60/20/20 split
+        n_cal = max(1, n // 5)
+        n_test = max(1, n // 5)
+        calibrate = rows[n - n_cal - n_test : n - n_test]
+        test = rows[n - n_test :]
+        # Ensure disjoint by timestamp (already sorted)
+        if calibrate and test:
+            assert max(getattr(r, "forecast_timestamp") for r in calibrate) < min(
+                getattr(r, "forecast_timestamp") for r in test
+            ), "calibrate and test must be disjoint"
+    T_opt = find_optimal_temperature(calibrate)
+    calibrated_test = apply_calibration(test, T_opt)
+    # Metrics per market (1X2 only for now; O/U, BTTS, corners can be added similarly)
+    from parlay.evaluation.metrics import aggregate_scores
+    metrics = aggregate_scores(calibrated_test)
+    return T_opt, calibrated_test, metrics

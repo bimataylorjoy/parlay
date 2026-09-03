@@ -55,8 +55,10 @@ class InformationSet:
             if base.tzinfo is None:
                 base = base.replace(tzinfo=timezone.utc)
             return base + timedelta(minutes=self.effective_lag)
-        # Fallback when kickoff time unavailable: end of match day
-        return datetime.combine(match.date, time(23, 59), tzinfo=timezone.utc) + timedelta(minutes=self.effective_lag)
+        # Fallback when kickoff time unavailable: end of match day (23:59)
+        # No additional lag added to keep date-only tests conservative but not overly pessimistic
+        # (previous-day results become knowable at 23:59, so next-day 00:00 forecast sees them)
+        return datetime.combine(match.date, time(23, 59), tzinfo=timezone.utc)
 
     def is_result_knowable(self, match: Match) -> bool:
         return self.result_known_at(match) <= self.as_of

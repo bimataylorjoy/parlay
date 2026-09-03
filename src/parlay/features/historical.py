@@ -9,34 +9,47 @@ from parlay.data.schemas import Match
 from parlay.data.validation import validate_matches
 
 
-def build_pre_match_features(matches: list[Match], *, window: int = 5) -> dict[str, dict[str, float]]:
-    """Build rolling goals/form/corner features using only earlier completed matches.
+def build_pre_match_features(matches: list[Match], *, window: int = 5, forecast_lead_minutes: int = 60) -> dict[str, dict[str, float]]:
+    """Build rolling features using InformationSet semantics (§1).
 
-    The result is keyed by match_id. Matches on the same date are excluded from
-    one another, which is conservative when kickoff timestamps are unavailable.
+    Features for a match may only use historical matches whose
+    result_known_at <= forecast_timestamp (kickoff - lead).
+    Falls back to date < row.date when kickoff unavailable.
     """
     if window < 1:
         raise ValueError("window must be positive")
     rows = sorted(validate_matches(matches), key=lambda row: (row.date, row.match_id))
-    # History tuple: (date, goals_for, goals_against, won, corners_for, corners_against, shots_for, shots_against)
-    history: dict[str, list[tuple[date, int, int, bool, int, int, int, int]]] = {}
+    # History stores (known_at, date, goals_for, goals_against, won, corners..., shots...)
+    from datetime import datetime, timedelta, timezone, time as dtime
+    from parlay.data.information import InformationSet, RESULT_LAG_MINUTES
+    history: dict[str, list[tuple[datetime, date, int, int, bool, int, int, int, int]]] = {}
     output: dict[str, dict[str, float]] = {}
     for row in rows:
+        # Forecast timestamp for this row
+        if row.kickoff_at is not None:
+            ft = row.kickoff_at
+            if ft.tzinfo is None:
+                ft = ft.replace(tzinfo=timezone.utc)
+            forecast_ts = ft - timedelta(minutes=forecast_lead_minutes)
+        else:
+            forecast_ts = datetime.combine(row.date, dtime(0,0), tzinfo=timezone.utc)
         team_history = {}
         for team in (row.home_team, row.away_team):
-            prior = [item for item in history.get(team, []) if item[0] < row.date][-window:]
+            # Filter knowable: known_at <= forecast_ts (per-competition lag inside InformationSet)
+            prior_all_knowable = [item for item in history.get(team, []) if item[0] <= forecast_ts]
+            prior = prior_all_knowable[-window:]
             count = len(prior)
-            goals_for = sum(item[1] for item in prior)
-            goals_against = sum(item[2] for item in prior)
-            wins = sum(item[3] for item in prior)
-            corners_for = sum(item[4] for item in prior)
-            corners_against = sum(item[5] for item in prior)
-            shots_for = sum(item[6] for item in prior)
-            shots_against = sum(item[7] for item in prior)
+            # indices: 0=known_at, 1=date, 2=goals_for, 3=goals_against, 4=won, 5=corners_for, 6=corners_against, 7=shots_for, 8=shots_against
+            goals_for = sum(item[2] for item in prior)
+            goals_against = sum(item[3] for item in prior)
+            wins = sum(item[4] for item in prior)
+            corners_for = sum(item[5] for item in prior)
+            corners_against = sum(item[6] for item in prior)
+            shots_for = sum(item[7] for item in prior)
+            shots_against = sum(item[8] for item in prior)
 
-            # Calculate rest days since previous match
-            prior_all = [item for item in history.get(team, []) if item[0] < row.date]
-            rest_days = float((row.date - prior_all[-1][0]).days) if prior_all else 7.0
+            # Calculate rest days since previous match (using actual date, not known_at)
+            rest_days = float((row.date - prior_all_knowable[-1][1]).days) if prior_all_knowable else 7.0
 
             team_history[team] = {
                 "matches": float(count),
@@ -69,8 +82,17 @@ def build_pre_match_features(matches: list[Match], *, window: int = 5) -> dict[s
             "home_rest_days": home["rest_days"],
             "away_rest_days": away["rest_days"],
         }
+        # Compute known_at for this match to store in history (for future rows)
+        if row.kickoff_at is not None:
+            ka = row.kickoff_at
+            if ka.tzinfo is None:
+                ka = ka.replace(tzinfo=timezone.utc)
+            lag = RESULT_LAG_MINUTES.get(row.competition, RESULT_LAG_MINUTES["default"])
+            known_at = ka + timedelta(minutes=lag)
+        else:
+            known_at = datetime.combine(row.date, dtime(23,59), tzinfo=timezone.utc)
         history.setdefault(row.home_team, []).append((
-            row.date,
+            known_at, row.date,
             row.home_goals or 0,
             row.away_goals or 0,
             (row.home_goals or 0) > (row.away_goals or 0),
@@ -80,7 +102,7 @@ def build_pre_match_features(matches: list[Match], *, window: int = 5) -> dict[s
             row.away_shots or 0,
         ))
         history.setdefault(row.away_team, []).append((
-            row.date,
+            known_at, row.date,
             row.away_goals or 0,
             row.home_goals or 0,
             (row.away_goals or 0) > (row.home_goals or 0),
