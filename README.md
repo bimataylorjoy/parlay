@@ -52,10 +52,10 @@ Most public betting models leak future information, overfit to goals, and only s
 
 | Layer | What you get |
 |---|---|
-| **Data** | `football-data.co.uk` E0 (EPL) + E1 (Championship) ingestion, SHA256 snapshots, SQLite time-safe DB, canonical team aliases |
+| **Data** | `football-data.co.uk` E0 (EPL) + E1 (Championship) ingestion, SHA256 snapshots, SQLite time-safe DB, canonical team aliases, timestamped team-news/lineup/injury contracts |
 | **Features** | Rolling `window=5` goals/corners/shots/win_rate + `rest_days` (congestion) |
 | **Models** | Poisson, Dixon-Coles `ρ∈[-0.3,0.3]`, NB2 `Var=μ+μ²/φ`, Bayesian HMC, Corners Poisson/NB, time-decay `w=0.5^{age/half_life}`, SOT blending `g_eff=(1-α)g+α·sot·0.31` |
-| **Markets** | `P(i,j)` 11×11 → 1X2, `P(over)=Σ M[total>line]`, BTTS, Asian Handicap quarter, Correct Score `P(i-j)=M[i,j]`, grouped, Corners 21×21 |
+| **Markets** | `P(i,j)` score matrix → 1X2, totals, BTTS, Asian Handicap, Correct Score, grouped, Corners, joint correlated parlay legs |
 | **Value** | `edge = p_model - p_market`, `EV = p·odds-1`, `Kelly = EV/(odds-1)·fraction` cap `0.5%`, `fair=1/p` |
 | **Eval** | Expanding/fixed-origin windows, temporal calibration, nested tuning, market-specific scoring, corners backtest |
 | **CLI** | `ingest`, `backtest`, `compare`, `tune`, `predict`, `sync-sportmonks`, `predict-sportmonks`, `calibrate` |
@@ -254,6 +254,7 @@ Ingestion is **append-only** with `ON CONFLICT(match_id) DO UPDATE` `src/parlay/
 * **Calibration** `src/parlay/evaluation/calibration.py:10`: `p^{1/T}/Σ p^{1/T}`.
 * **Tuning** `src/parlay/evaluation/tuning.py`: half-life grid search.
 * **Strategy** `evaluate_flat_stake(min_edge 0.03, min_ev 0.02)` + Pinnacle closing baseline `src/parlay/evaluation/backtest.py:166`.
+* **Parlays and information** `src/parlay/prediction/parlay.py` calculates joint leg probabilities from the score matrix; `src/parlay/data/market_information.py` requires declared publication/availability timestamps for team news, lineups, injuries, and odds movement. No external feed is assumed or silently treated as reliable.
 
 ---
 
@@ -298,6 +299,8 @@ This repository has been upgraded per `parlay_upgrade.md` — priority **Informa
 **Uncertainty:** Exchangeable priors `attack_raw~Normal(0,0.5,n)-mean` (no `α_last=-sum` asymmetry), posterior predictive `P(Y|D)=∫P(Y|θ)P(θ|D)dθ` via Monte Carlo subsample `200` with `λ CI 5/95%` and `Rhat/ESS/divergences`. SOT is **not** fractional pseudo-goals but league-aware covariate `logλ+=β_sot[league]·sot_signal` (`EPL 0.28/Champ 0.22` shrinkage).
 
 **Known limitations:** Promoted teams (`Coventry/Hull` 2 EPL matches) have `n<10` → `anomaly_flags=["insufficient_historical_sample","promoted_new_team_uncertainty"]` and `REJECT` if disagreement >0.25; market (Pinnacle `log_loss 0.98`) still sharper than model (`1.06`); `max_goals` adaptive `ε=1e-6` caps at 20 for speed.
+
+**Parlay warning:** Per-leg EV is not a parlay EV. Combined legs must use `parlay_from_score_matrix()` or another joint model. For example, BTTS + Over 2.5 and 1X2 + Correct Score are dependent events because they share the same goals. Odds movement summaries are descriptive price histories, not order-flow truth; actual order-flow data requires a timestamped, source-specific feed.
 
 Architecture now:
 

@@ -70,3 +70,13 @@ def test_generic_multiclass_market_scoring():
     scores = evaluate_market_predictions(rows, probabilities_attr="probabilities")
     assert scores["n"] == 1
     assert scores["log_loss"] > 0
+
+
+def test_parlay_uses_joint_score_probability_not_product():
+    from parlay.models.poisson import score_matrix
+    from parlay.prediction.parlay import btts_leg, over_leg, parlay_from_score_matrix
+    matrix = score_matrix(1.8, 1.2, max_goals=12)
+    result = parlay_from_score_matrix(matrix, [btts_leg(), over_leg(2.5)], decimal_odds=5.0)
+    assert result.joint_probability != pytest.approx(result.independence_probability)
+    assert "leg_dependence_present" in result.diagnostics
+    assert result.expected_value == pytest.approx(result.joint_probability * 5.0 - 1.0)
