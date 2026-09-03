@@ -101,7 +101,7 @@ pip install -e .
 pip install -e ".[dev]"  # plus pymc if needed: pip install pymc
 
 # verify
-PYTHONPATH=src python3 -m pytest -q  # 82 passed
+PYTHONPATH=src python3 -m pytest -q  # 100 passed (82+18 upgrade)
 ```
 
 **Requirements:** Python `>=3.10`, `numpy>=1.24`, `scipy>=1.10`.
@@ -285,9 +285,31 @@ PYTHONPATH=src python3 -m parlay.cli --help
 
 ---
 
+## Statistical Correctness Upgrade (P0-P3)
+
+This repository has been upgraded per `parlay_upgrade.md` — priority **Information Quality → Temporal Correctness → Statistical Model → Uncertainty**.
+
+**Model assumptions:** Poisson `P(k;λ)=λ^k e^{-λ}/k!` with `λ=exp(μ+γ+α-β)` clipped `[-3,3]`; Dixon-Coles `τ` globally consistent `ρ∈[max(-1/λ), min(1,1/λμ)]` (no per-match clip); NB2 `Var=μ+μ²/φ, φ=exp(logφ)` joint MLE; Corners separate Poisson/NB2 with `21×21` adaptive `ε=1e-6`.
+
+**Information availability:** `InformationSet(as_of=forecast, competition)` where `result_known_at = kickoff + lag` (`EPL 115m, Championship 118m`, fallback `23:59` if no kickoff), `forecast = kickoff -60m`. `feature_timestamp ≤ forecast` enforced via `InformationSet.is_result_knowable()` — no `date<=as_of` leakage.
+
+**Temporal evaluation:** `expanding_window(mode="rolling_origin"|"fixed_origin")` with metadata `evaluation_mode, forecast_policy, model_update_frequency`. Calibration is **temporally isolated** (`train|calibrate|test` disjoint, `60/20/20` or explicit windows, per-market `1X2/O/U/BTTS/corners`). Hyperparameter tuning is **nested** (`development → lock → holdout`).
+
+**Uncertainty:** Exchangeable priors `attack_raw~Normal(0,0.5,n)-mean` (no `α_last=-sum` asymmetry), posterior predictive `P(Y|D)=∫P(Y|θ)P(θ|D)dθ` via Monte Carlo subsample `200` with `λ CI 5/95%` and `Rhat/ESS/divergences`. SOT is **not** fractional pseudo-goals but league-aware covariate `logλ+=β_sot[league]·sot_signal` (`EPL 0.28/Champ 0.22` shrinkage).
+
+**Known limitations:** Promoted teams (`Coventry/Hull` 2 EPL matches) have `n<10` → `anomaly_flags=["insufficient_historical_sample","promoted_new_team_uncertainty"]` and `REJECT` if disagreement >0.25; market (Pinnacle `log_loss 0.98`) still sharper than model (`1.06`); `max_goals` adaptive `ε=1e-6` caps at 20 for speed.
+
+Architecture now:
+
+```
+InformationSet ─→ Database/Features/Backtest (centralized gating)
+       ↓
+TeamStrength (cached by cutoff, deterministic) ─→ Score Matrix adaptive ε=1e-6 ─→ PredictionResult(probabilities, expected_rates{ci}, uncertainty{anomaly_flags, decision}, model_metadata)
+```
+
 ## Contributors
 
-* **bimataylorjoy** — [@bimataylorjoy](https://github.com/bimataylorjoy) (maintainer, multi-market engine, Championship ingestion, CLI dashboard) `pyproject.toml:12`
+* **bimataylorjoy** — [@bimataylorjoy](https://github.com/bimataylorjoy) (maintainer, multi-market engine, Championship ingestion, CLI dashboard, P0-P3 upgrade) `pyproject.toml:12`
 
 Contributions welcome — open an issue or PR. For betting syndicate-grade accuracy, see `docs/ROADMAP.md` (planned: player-level xG, rest-day congestion, live in-play).
 

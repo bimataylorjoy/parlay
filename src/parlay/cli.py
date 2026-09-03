@@ -456,7 +456,23 @@ def main(argv: list[str] | None = None) -> int:
                             if k>best_kelly: best_kelly=k; best_selection, best_odds, best_ev = sel,o,ev; bet_str=f"Bet {sel} @ {o:.2f}, EV {ev*100:+.1f}% (Stake: {k*100:.1f}%)"
                     except: pass
 
-            print(f"{date_str:<10} | {home_raw:<15} vs {away_raw:<15} | {p_1*100:>4.1f}% {p_x*100:>4.1f}% {p_2*100:>4.1f}% | {p_o*100:>4.1f}% {p_u*100:>4.1f}% | {bet_str}")
+            # Anomaly diagnostics (§17) — treat extreme disagreement as anomaly, not auto edge
+            from parlay.evaluation.anomaly import diagnose
+            # n_historical per team
+            n_home_hist = sum(1 for m in available_matches if m.home_team==home or m.away_team==home)
+            n_away_hist = sum(1 for m in available_matches if m.home_team==away or m.away_team==away)
+            n_hist = min(n_home_hist, n_away_hist)
+            is_promoted = n_hist < 10
+            # Use market home prob if available
+            mkt_home_p = None
+            try:
+                if "B365H" in row and row["B365H"]:
+                    # raw implied without de-vig as proxy; for true use implied_probabilities
+                    mkt_home_p = 1.0/float(row["B365H"])
+            except: pass
+            diag = diagnose(p_1, mkt_home_p, n_historical=n_hist, is_promoted=is_promoted)
+            anomaly_note = f" | {diag.decision} {','.join(diag.anomaly_flags) if diag.anomaly_flags else 'ok'}" if diag.decision != "PASS" or diag.anomaly_flags else ""
+            print(f"{date_str:<10} | {home_raw:<15} vs {away_raw:<15} | {p_1*100:>4.1f}% {p_x*100:>4.1f}% {p_2*100:>4.1f}% | {p_o*100:>4.1f}% {p_u*100:>4.1f}% | {bet_str}{anomaly_note}")
             # Build comprehensive output row with fair odds for manual comparison
             def _fair(p): return round(1/p,2) if p>1e-9 else 999
             output_rows.append({
@@ -492,7 +508,9 @@ def main(argv: list[str] | None = None) -> int:
                 # Market odds passthrough for audit
                 "B365H": row.get("B365H"), "B365D": row.get("B365D"), "B365A": row.get("B365A"),
                 "B365>2.5": row.get("B365>2.5"), "B365<2.5": row.get("B365<2.5"),
-                "recommendation": best_selection, "recommendation_odds": best_odds, "recommendation_ev": round(best_ev,4) if best_ev is not None else None, "stake_fraction": round(best_kelly,4)
+                "recommendation": best_selection, "recommendation_odds": best_odds, "recommendation_ev": round(best_ev,4) if best_ev is not None else None, "stake_fraction": round(best_kelly,4),
+                "anomaly_decision": diag.decision, "anomaly_flags": ",".join(diag.anomaly_flags), "n_historical": n_hist, "is_promoted": is_promoted,
+                "forecast_policy": "kickoff_minus_60m", "model_update_frequency": "per_fold"
             })
 
             # Detailed per-match dashboard for manual use

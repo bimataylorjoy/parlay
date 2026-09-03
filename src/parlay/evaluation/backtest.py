@@ -235,4 +235,11 @@ def run_backtest_full(
         "model_update_frequency": "per_fold" if evaluation_mode == "rolling_origin" else "fixed_origin",
         "calibration_mode": calibration_mode,
     }
+    # Regime analysis (§18) — sample size + log loss/brier per regime
+    try:
+        from parlay.evaluation.regime import analyze_by_regime, promoted_regime
+        regime_out = analyze_by_regime(records, lambda r: promoted_regime(r), min_n=30)
+        metadata["regime_analysis"] = regime_out
+    except Exception:
+        pass
     return BacktestResult(records=records, metrics=metrics, fold_metrics=fold_metrics_list, metadata=metadata)

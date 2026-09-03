@@ -13,6 +13,11 @@ import numpy as np
 
 from parlay.data.schemas import Match
 from parlay.data.validation import validate_matches
+from functools import lru_cache  # for performance §21
+import hashlib
+
+# Simple in-memory cache keyed by information cutoff (§21)
+_FIT_CACHE: dict[str, "TeamStrengthModel"] = {}
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,6 +115,11 @@ def fit_team_strength(
     teams = tuple(sorted({team for row in rows for team in (row.home_team, row.away_team)}))
     index = {team: i for i, team in enumerate(teams)}
     reference = as_of or max(row.date for row in rows)
+    # Performance: cache keyed by information cutoff + hyperparams (§21)
+    cache_key_raw = f"{reference}|{half_life_days}|{model}|{estimator}|{l2_reg}|{rho}|{dispersion}|{len(rows)}|{hash(tuple(sorted(teams)))}"
+    cache_key = hashlib.sha256(cache_key_raw.encode()).hexdigest()[:16]
+    if cache_key in _FIT_CACHE and max_goals == _FIT_CACHE[cache_key].max_goals:
+        return _FIT_CACHE[cache_key]
     home = np.array([index[row.home_team] for row in rows], dtype=int)
     away = np.array([index[row.away_team] for row in rows], dtype=int)
     
@@ -273,7 +283,7 @@ def fit_team_strength(
         fitted_home_disp = dispersion if dispersion is not None else 10.0
         fitted_away_disp = dispersion if dispersion is not None else 10.0
 
-    return TeamStrengthModel(
+    result = TeamStrengthModel(
         teams=teams,
         attack={team: float(attack[i]) for i, team in enumerate(teams)},
         defense={team: float(defense[i]) for i, team in enumerate(teams)},
@@ -285,3 +295,5 @@ def fit_team_strength(
         away_dispersion=fitted_away_disp,
         max_goals=max_goals,
     )
+    _FIT_CACHE[cache_key] = result
+    return result
