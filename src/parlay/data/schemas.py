@@ -36,3 +36,30 @@ class OddsSnapshot:
     odds: float
     captured_at: datetime
     is_closing: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class PlayerMatchStat:
+    fixture_id: str
+    player_id: str
+    team_id: str
+    opponent_id: str | None
+    position: str | None
+    started: bool
+    minutes: float
+    goals: float
+    assists: float
+    shots: float
+    shots_on_target: float
+    key_passes: float
+    tackles: float
+    interceptions: float
+    clearances: float
+    blocks: float
+    errors: float
+    xg: float | None
+    xa: float | None
+    rating: float | None
+    observed_at: datetime
+    available_at: datetime
+    source: str

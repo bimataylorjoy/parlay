@@ -272,6 +272,8 @@ The current external feature layer (`features.external.external_information_feat
 
 The optional `features.player_impact` module implements the minimum valid adjustment contract: callers must provide externally trained historical player ratings and expected minutes. Without those ratings, lineup/injury data remains an audit feature and reports `unavailable` rather than inventing numerical impact. Active adjustments are capped and must be compared with the no-enrichment baseline through ablation evaluation.
 
+Player-match statistics are represented by `data.schemas.PlayerMatchStat` and can be persisted with `ResearchDatabase.insert_player_match_stats()`. Sportmonks fixture lineups are normalized by `data.sportmonks.parse_player_match_stats()`. `features.player_rating.estimate_player_ratings()` creates shrunken per-90 attack/defense values using minutes-based reliability and excludes rows after the requested cutoff. These ratings are research inputs; they are not silently injected into the production baseline before walk-forward ablation proves value.
+
 Sportmonks premium odds history is a price-update history. It is not a full order book, traded volume, or authenticated bookmaker order flow. The project therefore labels it as market movement evidence and does not treat it as causal signal without separate validation.
 
 ---
@@ -282,7 +284,7 @@ Sportmonks premium odds history is a price-update history. It is not a full orde
 src/parlay/
   data/         schemas, normalization, validation, loaders, sources, database, ingestion, sportmonks
   models/       poisson, dixon_coles, negative_binomial, mle, bayesian, team_strength, corners
-  features/     historical (rolling pre-match)
+  features/     historical, external, player_rating, player_impact
   evaluation/   backtest, metrics, market, calibration, temporal, compare, tuning, serialization
   prediction/   markets (de-vig, Kelly, Asian, Correct Score)
 tests/          82 tests (unit + integration + CLI)  →  pytest

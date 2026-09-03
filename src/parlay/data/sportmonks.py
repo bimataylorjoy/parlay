@@ -5,7 +5,7 @@ import json
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from .schemas import Match, OddsSnapshot
+from .schemas import Match, OddsSnapshot, PlayerMatchStat
 from .market_information import InjuryReport, LineupStatus, TeamNews
 from .normalization import canonical_team_name
 
@@ -126,6 +126,44 @@ def premium_odds_snapshots(
             is_closing=bool(odd.get("is_closing", False)),
         ))
     return snapshots
+
+
+def parse_player_match_stats(
+    fixture: dict, *, source: str = "sportmonks",
+) -> list[PlayerMatchStat]:
+    """Normalize fixture player statistics with conservative availability time."""
+    kickoff = datetime.fromisoformat(fixture["starting_at"].replace("Z", "+00:00"))
+    participants = {row.get("id"): row for row in fixture.get("participants", [])}
+    rows: list[PlayerMatchStat] = []
+    for lineup in fixture.get("lineups", []) or []:
+        player_id = lineup.get("player_id") or lineup.get("player", {}).get("id")
+        team_id = lineup.get("team_id")
+        if player_id is None or team_id is None:
+            continue
+        opponent_id = next((key for key in participants if key != team_id), None)
+        statistics = lineup.get("statistics", lineup.get("stats", {})) or {}
+        def number(*keys: str) -> float:
+            for key in keys:
+                value = statistics.get(key, lineup.get(key))
+                if value is not None:
+                    try:
+                        return float(value)
+                    except (TypeError, ValueError):
+                        return 0.0
+            return 0.0
+        rows.append(PlayerMatchStat(
+            fixture_id=f"sportmonks:{fixture['id']}", player_id=str(player_id), team_id=str(team_id),
+            opponent_id=str(opponent_id) if opponent_id is not None else None,
+            position=str(lineup.get("position", lineup.get("detailed_position", ""))) or None,
+            started=str(lineup.get("type", lineup.get("starter", ""))).casefold() in {"starting", "starter", "1", "true"},
+            minutes=number("minutes", "minutes_played"), goals=number("goals"), assists=number("assists"),
+            shots=number("shots", "total_shots"), shots_on_target=number("shots_on_target", "shots_on_target"),
+            key_passes=number("key_passes", "key_passes_total"), tackles=number("tackles"),
+            interceptions=number("interceptions"), clearances=number("clearances"), blocks=number("blocks"),
+            errors=number("errors", "errors_leading_to_goal"), xg=statistics.get("xg"), xa=statistics.get("xa"),
+            rating=statistics.get("rating"), observed_at=kickoff, available_at=kickoff, source=source,
+        ))
+    return rows
 
 
 def fixture_to_match(fixture: dict, *, competition: str = "EPL", season: str = "2026-27") -> Match:

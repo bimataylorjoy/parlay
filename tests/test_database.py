@@ -37,3 +37,12 @@ def test_database_stores_information_snapshots():
     available = datetime(2024, 1, 1, 12, tzinfo=timezone.utc)
     db.insert_information_snapshot("m1", "injuries", "sportmonks", available, '{"player":"p1"}')
     assert len(db.information_as_of("m1", available)) == 1
+
+
+def test_database_stores_player_match_stats():
+    from parlay.data.schemas import PlayerMatchStat
+    db = ResearchDatabase()
+    db.insert_matches([Match("m1", date(2024, 1, 2), "league", "2024", "A", "B", 1, 0)])
+    available = datetime(2024, 1, 1, 12, tzinfo=timezone.utc)
+    db.insert_player_match_stats([PlayerMatchStat("m1", "p1", "A", "B", "FW", True, 90, 1, 0, 2, 1, 1, 0, 0, 0, 0, 0, None, None, 7.0, available, available, "test")])
+    assert len(db.player_match_stats_as_of(available)) == 1

@@ -4,7 +4,7 @@ from datetime import date, datetime
 import sqlite3
 from typing import Iterable
 
-from .schemas import Match, OddsSnapshot
+from .schemas import Match, OddsSnapshot, PlayerMatchStat
 
 
 SCHEMA = """
@@ -62,6 +62,33 @@ CREATE TABLE IF NOT EXISTS information_snapshots (
     available_at TEXT NOT NULL,
     payload_json TEXT NOT NULL,
     PRIMARY KEY (match_id, kind, source, available_at)
+);
+
+CREATE TABLE IF NOT EXISTS player_match_stats (
+    fixture_id TEXT NOT NULL,
+    player_id TEXT NOT NULL,
+    team_id TEXT NOT NULL,
+    opponent_id TEXT,
+    position TEXT,
+    started INTEGER NOT NULL,
+    minutes REAL NOT NULL,
+    goals REAL NOT NULL,
+    assists REAL NOT NULL,
+    shots REAL NOT NULL,
+    shots_on_target REAL NOT NULL,
+    key_passes REAL NOT NULL,
+    tackles REAL NOT NULL,
+    interceptions REAL NOT NULL,
+    clearances REAL NOT NULL,
+    blocks REAL NOT NULL,
+    errors REAL NOT NULL,
+    xg REAL,
+    xa REAL,
+    rating REAL,
+    observed_at TEXT NOT NULL,
+    available_at TEXT NOT NULL,
+    source TEXT NOT NULL,
+    PRIMARY KEY (fixture_id, player_id)
 );
 
 CREATE TABLE IF NOT EXISTS predictions (
@@ -209,6 +236,30 @@ class ResearchDatabase:
             (match_id, kind, source, _dt(available_at), payload_json),
         )
         self.connection.commit()
+
+    def insert_player_match_stats(self, stats: Iterable[PlayerMatchStat]) -> None:
+        self.connection.executemany(
+            """INSERT OR REPLACE INTO player_match_stats
+            (fixture_id, player_id, team_id, opponent_id, position, started, minutes,
+             goals, assists, shots, shots_on_target, key_passes, tackles,
+             interceptions, clearances, blocks, errors, xg, xa, rating,
+             observed_at, available_at, source)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            [(
+                row.fixture_id, row.player_id, row.team_id, row.opponent_id,
+                row.position, int(row.started), row.minutes, row.goals, row.assists,
+                row.shots, row.shots_on_target, row.key_passes, row.tackles,
+                row.interceptions, row.clearances, row.blocks, row.errors,
+                row.xg, row.xa, row.rating, _dt(row.observed_at), _dt(row.available_at), row.source,
+            ) for row in stats],
+        )
+        self.connection.commit()
+
+    def player_match_stats_as_of(self, as_of: datetime) -> list[sqlite3.Row]:
+        return list(self.connection.execute(
+            "SELECT * FROM player_match_stats WHERE available_at <= ? ORDER BY available_at, fixture_id, player_id",
+            (_dt(as_of),),
+        ))
 
     def information_as_of(self, match_id: str, as_of: datetime) -> list[sqlite3.Row]:
         return list(self.connection.execute(

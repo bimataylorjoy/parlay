@@ -1,6 +1,6 @@
 from datetime import date
 
-from parlay.data.sportmonks import extract_totals_25, fixture_to_match, totals_to_odds, parse_fixture_information, premium_odds_snapshots
+from parlay.data.sportmonks import extract_totals_25, fixture_to_match, totals_to_odds, parse_fixture_information, premium_odds_snapshots, parse_player_match_stats
 
 
 def payload():
@@ -52,3 +52,15 @@ def test_premium_odds_history_normalizes_updates():
     rows = premium_odds_snapshots(payload)
     assert len(rows) == 2
     assert rows[1].odds == 1.8
+
+
+def test_player_statistics_are_normalized():
+    fixture = {
+        "id": 123, "starting_at": "2026-09-05T15:00:00Z",
+        "participants": [{"id": 1}, {"id": 2}],
+        "lineups": [{"player_id": 9, "team_id": 1, "type": "starting", "statistics": {"minutes": 90, "goals": 1, "assists": 1, "rating": 7.5}}],
+    }
+    rows = parse_player_match_stats(fixture)
+    assert rows[0].player_id == "9"
+    assert rows[0].minutes == 90
+    assert rows[0].available_at.isoformat().startswith("2026-09-05T15")
