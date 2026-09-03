@@ -268,6 +268,8 @@ Set `SPORTMONKS_API_TOKEN` or pass `--token` to `sync-sportmonks`. The adapter u
 
 Enrichment is stored as timestamped audit data in the `information_snapshots` table. Only records whose provider-declared `available_at` is no later than the forecast cutoff may be used by a future feature integration. Missing subscription fields are ignored and never replaced with invented lineup, injury, or news values.
 
+The current external feature layer (`features.external.external_information_features`) exposes availability and coverage indicators only. It does not alter goal rates from a lineup or injury count. Player-impact adjustments require historical player ratings, confirmed availability labels, shrinkage, and an out-of-sample ablation benchmark; arbitrary weights are intentionally not applied.
+
 Sportmonks premium odds history is a price-update history. It is not a full order book, traded volume, or authenticated bookmaker order flow. The project therefore labels it as market movement evidence and does not treat it as causal signal without separate validation.
 
 ---
