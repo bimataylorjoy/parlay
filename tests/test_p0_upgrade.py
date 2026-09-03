@@ -26,12 +26,12 @@ def test_information_set_per_competition():
     # EPL lag 115 -> exactly known, Champ lag 118 -> not yet
     assert info_epl.is_result_knowable(m) is True
     assert info_champ.is_result_knowable(m) is False
-    # Same day fallback: 23:59 + lag (120) = 01:59 next day
+    # Fallback when kickoff is None: known_at = 23:59 same day (no lag)
     m2 = Match(match_id="m2", date=date(2026,9,2), competition="EPL", season="test", home_team="A", away_team="B", home_goals=0, away_goals=0, kickoff_at=None)
-    info = InformationSet(as_of=datetime(2026,9,3,2,0, tzinfo=timezone.utc))
-    assert info.is_result_knowable(m2) is True  # 01:59 < 02:00
-    info2 = InformationSet(as_of=datetime(2026,9,3,1,58, tzinfo=timezone.utc))
-    assert info2.is_result_knowable(m2) is False  # 01:58 < 01:59
+    info = InformationSet(as_of=datetime(2026,9,3,0,0, tzinfo=timezone.utc))
+    assert info.is_result_knowable(m2) is True  # 23:59 02/09 < 00:00 03/09
+    info2 = InformationSet(as_of=datetime(2026,9,2,23,58, tzinfo=timezone.utc))
+    assert info2.is_result_knowable(m2) is False  # 23:58 < 23:59 same day
 
 
 def test_dixon_rho_global_no_per_match_mutation():
