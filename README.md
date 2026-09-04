@@ -1,4 +1,4 @@
-# Parlay Research — Time-Safe Football Probability Engine
+# Time-Safe Football Probability Engine
 
 <p align="center">
   <a href="https://github.com/bimataylorjoy/parlay/actions"><img src="https://img.shields.io/badge/tests-82%20passed-brightgreen" alt="tests"></a>
@@ -9,8 +9,8 @@
 </p>
 
 <p align="center">
-  <strong>Research-grade, anti-leakage framework for football score probabilities — from Poisson to Dixon-Coles to Corners, with fair-odds, Kelly and full backtesting.</strong><br/>
-  <em>Research-only. Does not place bets or provide financial advice.</em>
+  <strong>Anti leakage framework for football score probabilities from Poisson to Dixon Coles to Corners, with fair odds, Kelly and full backtesting.</strong><br/>
+  <em>Research only. Does not place bets or provide financial advice.</em>
 </p>
 
 ---
