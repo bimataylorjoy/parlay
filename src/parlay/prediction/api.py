@@ -1,9 +1,21 @@
-"""Uncertainty-first prediction API (§15)."""
+"""Uncertainty-first prediction API for a single match."""
+
+from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any
-import math
+
 import numpy as np
+
+from parlay.evaluation.anomaly import diagnose
+from parlay.models.team_strength import TeamStrengthModel
+from parlay.prediction.markets import (
+    correct_score_probabilities,
+    de_vig,
+    grouped_score_markets,
+    outcome_probabilities,
+    totals_probabilities,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -13,42 +25,34 @@ class ExpectedRates:
     lambda_away_mean: float
     lambda_away_ci: tuple[float, float] | None
     exp_total_goals_mean: float
-    exp_total_goals_ci: tuple[float, float] | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class Uncertainty:
-    # Parameter uncertainty vs event randomness
     posterior_std_home: float | None = None
     posterior_std_away: float | None = None
     market_disagreement: float | None = None
-    calibration_error: float | None = None
     anomaly_flags: tuple[str, ...] = ()
-    decision: str = "PASS"  # RESEARCH_SIGNAL/WATCH/PASS/REJECT
+    decision: str = "PASS"
 
 
 @dataclass(frozen=True, slots=True)
 class PredictionResult:
-    """Rich prediction output (§15).
+    """1X2 probabilities plus expected rates, uncertainty and derived markets.
 
-    Simple access: `result.probabilities["home_win"]`
-    Full: `result.expected_rates.lambda_home_mean`, `result.uncertainty`, `result.model_metadata`
+    ``result["home_win"]`` is shorthand for ``result.probabilities["home_win"]``.
     """
 
-    probabilities: dict[str, float]  # 1X2 mean
+    probabilities: dict[str, float]
     expected_rates: ExpectedRates
     uncertainty: Uncertainty
     model_metadata: dict[str, Any] = field(default_factory=dict)
-    calibration_metadata: dict[str, Any] | None = None
-    # Convenience: keep score matrix mean for derived markets if needed
-    score_matrix_mean: Any = None  # np.ndarray
-    btts_probabilities: dict[str, float] | None = None
-    totals_probabilities: dict[str, dict[str, float]] | None = None  # line -> {over, push, under}
-    corners_probabilities: dict[str, Any] | None = None
-    correct_score_probabilities: dict[str, float] | None = None
+    score_matrix: np.ndarray | None = field(default=None, repr=False)
+    grouped_markets: dict[str, float] = field(default_factory=dict)
+    totals: dict[float, dict[str, float]] = field(default_factory=dict)
+    correct_scores: dict[str, float] = field(default_factory=dict)
 
     def __getitem__(self, key: str) -> float:
-        # Allow dict-like access to probabilities for backward compat
         return self.probabilities[key]
 
     def to_dict(self) -> dict[str, Any]:
@@ -62,7 +66,9 @@ class PredictionResult:
             },
             "uncertainty": {
                 "posterior_std_home": self.uncertainty.posterior_std_home,
-                "anomaly_flags": self.uncertainty.anomaly_flags,
+                "posterior_std_away": self.uncertainty.posterior_std_away,
+                "market_disagreement": self.uncertainty.market_disagreement,
+                "anomaly_flags": list(self.uncertainty.anomaly_flags),
                 "decision": self.uncertainty.decision,
             },
             "model_metadata": self.model_metadata,
@@ -70,101 +76,86 @@ class PredictionResult:
 
 
 def predict_with_uncertainty(
-    model,
+    model: TeamStrengthModel,
     home_team: str,
     away_team: str,
     *,
-    idata=None,  # Bayesian posterior if available
+    idata: Any = None,
     market_odds: dict[str, float] | None = None,
     n_historical: int | None = None,
     is_promoted: bool = False,
+    totals_lines: tuple[float, ...] = (1.5, 2.5, 2.75, 3.5),
 ) -> PredictionResult:
-    """Build PredictionResult from a fitted TeamStrengthModel and optional posterior.
+    """Predict one match from a fitted model.
 
-    If idata is provided, uses posterior predictive (§5) for uncertainty; otherwise
-    uses point estimate with event randomness only.
+    With a Bayesian posterior (``idata`` or ``model.posterior``) the 1X2
+    probabilities are the posterior predictive mean and rate intervals are
+    reported; otherwise only event randomness is represented.
+    ``market_odds`` (decimal, keys ``home``/``draw``/``away``) feeds the
+    anomaly layer after Shin de-vigging.
     """
-    from parlay.models.poisson import outcome_probabilities
-    from parlay.prediction.markets import grouped_score_markets, correct_score_probabilities
-    from parlay.evaluation.anomaly import diagnose
-    import math as _math
-
-    # Point estimate
     exp_h, exp_a = model.expected_goals(home_team, away_team)
-    M = model.score_matrix(home_team, away_team)
-    probs = outcome_probabilities(M)
+    matrix = model.score_matrix(home_team, away_team)
+    probabilities = outcome_probabilities(matrix)
+    if n_historical is None:
+        n_historical = min(
+            model.historical_matches.get(home_team, 0), model.historical_matches.get(away_team, 0)
+        )
 
-    # Posterior uncertainty if available
-    idata = idata if idata is not None else getattr(model, "posterior", None)
-    posterior_std_h = None
-    posterior_std_a = None
-    ci_h = None
-    ci_a = None
+    idata = idata if idata is not None else model.posterior
+    std_h = std_a = None
+    ci_h = ci_a = None
     posterior_error = None
     if idata is not None:
         try:
             from parlay.prediction.bayesian_predictive import posterior_predictive_1x2
-            pp = posterior_predictive_1x2(idata, home_team, away_team, model.teams, model=model.model.removeprefix("dynamic_"), rho=model.rho)
-            probs = pp.mean_probability
-            ci_h = pp.lambda_home_ci
-            ci_a = pp.lambda_away_ci
-            posterior_std_h = float((ci_h[1] - ci_h[0]) / 3.29)  # approx std from 90% CI
-            posterior_std_a = float((ci_a[1] - ci_a[0]) / 3.29)
+
+            predictive = posterior_predictive_1x2(
+                idata, home_team, away_team, model.teams, model=model.model, rho=model.rho
+            )
+            probabilities = predictive.mean_probability
+            ci_h, ci_a = predictive.lambda_home_ci, predictive.lambda_away_ci
+            # 90% interval of a normal spans 3.29 standard deviations
+            std_h = (ci_h[1] - ci_h[0]) / 3.29
+            std_a = (ci_a[1] - ci_a[0]) / 3.29
         except (KeyError, ValueError, TypeError, AttributeError) as exc:
             posterior_error = f"posterior predictive unavailable: {exc}"
 
-    # Anomaly layer
-    market_p = None
-    market_method = None
-    if market_odds and all(key in market_odds for key in ("home", "draw", "away")):
-        if all(float(market_odds[key]) > 1.0 for key in ("home", "draw", "away")):
-            from parlay.prediction.markets import de_vig
-            implied = {key: 1.0 / float(market_odds[key]) for key in ("home", "draw", "away")}
-            market_method = "shin"
-            market_p = de_vig(implied, method=market_method)["home"]
-    diag = diagnose(
-        model_probability=probs["home_win"],
-        market_probability=market_p,
-        posterior_std=posterior_std_h,
+    market_home = None
+    if market_odds and all(float(market_odds.get(key, 0)) > 1.0 for key in ("home", "draw", "away")):
+        implied = {key: 1.0 / float(market_odds[key]) for key in ("home", "draw", "away")}
+        market_home = de_vig(implied, method="shin")["home"]
+    diagnostics = diagnose(
+        probabilities["home_win"],
+        market_home,
+        posterior_std=std_h,
         n_historical=n_historical,
         is_promoted=is_promoted,
+        lambda_total=exp_h + exp_a,
     )
-
-    # Derived markets for completeness
-    totals = {}
-    for line in [1.5, 2.5, 2.75, 3.5]:
-        from parlay.prediction.markets import totals_settlement_probabilities
-        try:
-            totals[str(line)] = totals_settlement_probabilities(M, line)
-        except Exception:
-            pass
-
     return PredictionResult(
-        probabilities=probs,
-        expected_rates=ExpectedRates(
-            lambda_home_mean=exp_h, lambda_home_ci=ci_h,
-            lambda_away_mean=exp_a, lambda_away_ci=ci_a,
-            exp_total_goals_mean=exp_h + exp_a,
-        ),
+        probabilities=probabilities,
+        expected_rates=ExpectedRates(exp_h, ci_h, exp_a, ci_a, exp_h + exp_a),
         uncertainty=Uncertainty(
-            posterior_std_home=posterior_std_h,
-            posterior_std_away=posterior_std_a,
-            market_disagreement=diag.disagreement,
-            anomaly_flags=diag.anomaly_flags,
-            decision=diag.decision,
+            posterior_std_home=std_h,
+            posterior_std_away=std_a,
+            market_disagreement=diagnostics.disagreement,
+            anomaly_flags=diagnostics.anomaly_flags,
+            decision=diagnostics.decision,
         ),
         model_metadata={
             "model": model.model,
             "rho": model.rho,
             "home_advantage": model.home_advantage,
-            "fit_converged": getattr(model, "fit_converged", True),
-            "fit_warning": getattr(model, "fit_warning", None),
+            "fit_converged": model.fit_converged,
+            "fit_warning": model.fit_warning,
             "posterior_predictive_error": posterior_error,
-            "uncertainty_source": "posterior_predictive" if idata is not None and posterior_error is None else "unavailable",
-            "market_probability_method": market_method,
+            "uncertainty_source": "posterior_predictive"
+            if idata is not None and posterior_error is None
+            else "none",
         },
-        score_matrix_mean=M,
-        btts_probabilities=grouped_score_markets(M),
-        totals_probabilities=totals,
-        correct_score_probabilities=correct_score_probabilities(M, max_home=4, max_away=4),
+        score_matrix=matrix,
+        grouped_markets=grouped_score_markets(matrix),
+        totals={line: totals_probabilities(matrix, line) for line in totals_lines},
+        correct_scores=correct_score_probabilities(matrix, max_home=4, max_away=4),
     )

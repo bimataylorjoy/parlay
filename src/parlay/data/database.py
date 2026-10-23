@@ -1,11 +1,11 @@
 """SQLite persistence for immutable, time-aware research data."""
 
-from datetime import date, datetime
 import sqlite3
-from typing import Iterable
+from collections.abc import Iterable
+from datetime import date, datetime
+from typing import Any
 
 from .schemas import Match, OddsSnapshot, PlayerMatchStat
-
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -128,7 +128,9 @@ CREATE INDEX IF NOT EXISTS idx_predictions_model ON predictions(model_version, f
 
 
 def _dt(value: date | datetime | str | None) -> str | None:
-    return value.isoformat() if value is not None else None
+    if value is None or isinstance(value, str):
+        return value
+    return value.isoformat()
 
 
 class ResearchDatabase:
@@ -155,12 +157,7 @@ class ResearchDatabase:
         team_ids = team_ids or {name: name for row in rows for name in (row.home_team, row.away_team)}
         for name, team_id in team_ids.items():
             self.upsert_team(team_id, name)
-        missing = {
-            team
-            for row in rows
-            for team in (row.home_team, row.away_team)
-            if team not in team_ids
-        }
+        missing = {team for row in rows for team in (row.home_team, row.away_team) if team not in team_ids}
         if missing:
             raise ValueError(f"Missing team IDs for: {sorted(missing)}")
         self.connection.executemany(
@@ -187,12 +184,29 @@ class ResearchDatabase:
               neutral=excluded.neutral,
               source=excluded.source,
               source_timestamp=excluded.source_timestamp""",
-            [(
-                row.match_id, _dt(row.date), row.competition, row.season,
-                team_ids[row.home_team], team_ids[row.away_team], row.home_goals,
-                row.away_goals, row.home_sot, row.away_sot, row.home_corners, row.away_corners,
-                row.home_shots, row.away_shots, int(row.neutral), row.source, _dt(row.source_timestamp), _dt(row.kickoff_at),
-            ) for row in rows],
+            [
+                (
+                    row.match_id,
+                    _dt(row.date),
+                    row.competition,
+                    row.season,
+                    team_ids[row.home_team],
+                    team_ids[row.away_team],
+                    row.home_goals,
+                    row.away_goals,
+                    row.home_sot,
+                    row.away_sot,
+                    row.home_corners,
+                    row.away_corners,
+                    row.home_shots,
+                    row.away_shots,
+                    int(row.neutral),
+                    row.source,
+                    _dt(row.source_timestamp),
+                    _dt(row.kickoff_at),
+                )
+                for row in rows
+            ],
         )
         self.connection.commit()
 
@@ -201,10 +215,18 @@ class ResearchDatabase:
             """INSERT OR REPLACE INTO odds_snapshots
             (match_id, bookmaker, market, selection, odds, captured_at, is_closing)
             VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            [(
-                row.match_id, row.bookmaker, row.market, row.selection, row.odds,
-                _dt(row.captured_at), int(row.is_closing),
-            ) for row in odds],
+            [
+                (
+                    row.match_id,
+                    row.bookmaker,
+                    row.market,
+                    row.selection,
+                    row.odds,
+                    _dt(row.captured_at),
+                    int(row.is_closing),
+                )
+                for row in odds
+            ],
         )
         self.connection.commit()
 
@@ -215,8 +237,9 @@ class ResearchDatabase:
             raise ValueError("future matches must not contain a final score")
         self.insert_matches(rows, team_ids)
 
-    def insert_feature_snapshot(self, match_id: str, as_of: datetime,
-                                feature_set: str, values_json: str) -> None:
+    def insert_feature_snapshot(
+        self, match_id: str, as_of: datetime, feature_set: str, values_json: str
+    ) -> None:
         self.connection.execute(
             """INSERT OR REPLACE INTO feature_snapshots
             (match_id, as_of, feature_set, values_json) VALUES (?, ?, ?, ?)""",
@@ -225,7 +248,11 @@ class ResearchDatabase:
         self.connection.commit()
 
     def insert_information_snapshot(
-        self, match_id: str, kind: str, source: str, available_at: datetime,
+        self,
+        match_id: str,
+        kind: str,
+        source: str,
+        available_at: datetime,
         payload_json: str,
     ) -> None:
         """Persist raw enrichment without making it part of model inputs."""
@@ -245,35 +272,63 @@ class ResearchDatabase:
              interceptions, clearances, blocks, errors, xg, xa, rating,
              observed_at, available_at, source)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            [(
-                row.fixture_id, row.player_id, row.team_id, row.opponent_id,
-                row.position, int(row.started), row.minutes, row.goals, row.assists,
-                row.shots, row.shots_on_target, row.key_passes, row.tackles,
-                row.interceptions, row.clearances, row.blocks, row.errors,
-                row.xg, row.xa, row.rating, _dt(row.observed_at), _dt(row.available_at), row.source,
-            ) for row in stats],
+            [
+                (
+                    row.fixture_id,
+                    row.player_id,
+                    row.team_id,
+                    row.opponent_id,
+                    row.position,
+                    int(row.started),
+                    row.minutes,
+                    row.goals,
+                    row.assists,
+                    row.shots,
+                    row.shots_on_target,
+                    row.key_passes,
+                    row.tackles,
+                    row.interceptions,
+                    row.clearances,
+                    row.blocks,
+                    row.errors,
+                    row.xg,
+                    row.xa,
+                    row.rating,
+                    _dt(row.observed_at),
+                    _dt(row.available_at),
+                    row.source,
+                )
+                for row in stats
+            ],
         )
         self.connection.commit()
 
     def player_match_stats_as_of(self, as_of: datetime) -> list[sqlite3.Row]:
-        return list(self.connection.execute(
-            "SELECT * FROM player_match_stats WHERE available_at <= ? ORDER BY available_at, fixture_id, player_id",
-            (_dt(as_of),),
-        ))
+        return list(
+            self.connection.execute(
+                "SELECT * FROM player_match_stats WHERE available_at <= ? "
+                "ORDER BY available_at, fixture_id, player_id",
+                (_dt(as_of),),
+            )
+        )
 
     def information_as_of(self, match_id: str, as_of: datetime) -> list[sqlite3.Row]:
-        return list(self.connection.execute(
-            """SELECT * FROM information_snapshots
+        return list(
+            self.connection.execute(
+                """SELECT * FROM information_snapshots
             WHERE match_id = ? AND available_at <= ? ORDER BY available_at""",
-            (match_id, _dt(as_of)),
-        ))
+                (match_id, _dt(as_of)),
+            )
+        )
 
     def matches_as_of(self, as_of: date) -> list[sqlite3.Row]:
         """Return matches whose result was known by the supplied date."""
-        return list(self.connection.execute(
-            "SELECT * FROM matches WHERE match_date <= ? ORDER BY match_date, match_id",
-            (_dt(as_of),),
-        ))
+        return list(
+            self.connection.execute(
+                "SELECT * FROM matches WHERE match_date <= ? ORDER BY match_date, match_id",
+                (_dt(as_of),),
+            )
+        )
 
     def load_matches(self, *, as_of: date | datetime | None = None, information_set=None) -> list[Match]:
         """Rehydrate domain matches. Supports legacy `as_of: date` or `InformationSet`."""
@@ -300,26 +355,31 @@ class ResearchDatabase:
                 params = (_dt(as_of),)
         query += " ORDER BY m.match_date, m.match_id"
         rows = self.connection.execute(query, params)
-        return [Match(
-            match_id=row["match_id"],
-            date=date.fromisoformat(row["match_date"]),
-            competition=row["competition"],
-            season=row["season"],
-            home_team=row["home_name"],
-            away_team=row["away_name"],
-            home_goals=row["home_goals"],
-            away_goals=row["away_goals"],
-            home_sot=row["home_sot"] if "home_sot" in row.keys() else None,
-            away_sot=row["away_sot"] if "away_sot" in row.keys() else None,
-            home_corners=row["home_corners"] if "home_corners" in row.keys() else None,
-            away_corners=row["away_corners"] if "away_corners" in row.keys() else None,
-            home_shots=row["home_shots"] if "home_shots" in row.keys() else None,
-            away_shots=row["away_shots"] if "away_shots" in row.keys() else None,
-            neutral=bool(row["neutral"]),
-            source=row["source"],
-            source_timestamp=datetime.fromisoformat(row["source_timestamp"]) if row["source_timestamp"] else None,
-            kickoff_at=datetime.fromisoformat(row["kickoff_at"]) if row["kickoff_at"] else None,
-        ) for row in rows]
+        return [
+            Match(
+                match_id=row["match_id"],
+                date=date.fromisoformat(row["match_date"]),
+                competition=row["competition"],
+                season=row["season"],
+                home_team=row["home_name"],
+                away_team=row["away_name"],
+                home_goals=row["home_goals"],
+                away_goals=row["away_goals"],
+                home_sot=row["home_sot"],
+                away_sot=row["away_sot"],
+                home_corners=row["home_corners"],
+                away_corners=row["away_corners"],
+                home_shots=row["home_shots"],
+                away_shots=row["away_shots"],
+                neutral=bool(row["neutral"]),
+                source=row["source"],
+                source_timestamp=datetime.fromisoformat(row["source_timestamp"])
+                if row["source_timestamp"]
+                else None,
+                kickoff_at=datetime.fromisoformat(row["kickoff_at"]) if row["kickoff_at"] else None,
+            )
+            for row in rows
+        ]
 
     def load_odds(self, *, match_id: str | None = None) -> list[OddsSnapshot]:
         query = "SELECT * FROM odds_snapshots"
@@ -329,22 +389,27 @@ class ResearchDatabase:
             params = (match_id,)
         query += " ORDER BY captured_at, match_id, selection"
         rows = self.connection.execute(query, params)
-        return [OddsSnapshot(
-            match_id=row["match_id"],
-            bookmaker=row["bookmaker"],
-            market=row["market"],
-            selection=row["selection"],
-            odds=float(row["odds"]),
-            captured_at=datetime.fromisoformat(row["captured_at"]),
-            is_closing=bool(row["is_closing"]),
-        ) for row in rows]
+        return [
+            OddsSnapshot(
+                match_id=row["match_id"],
+                bookmaker=row["bookmaker"],
+                market=row["market"],
+                selection=row["selection"],
+                odds=float(row["odds"]),
+                captured_at=datetime.fromisoformat(row["captured_at"]),
+                is_closing=bool(row["is_closing"]),
+            )
+            for row in rows
+        ]
 
     def odds_as_of(self, match_id: str, as_of: datetime) -> list[sqlite3.Row]:
-        return list(self.connection.execute(
-            """SELECT * FROM odds_snapshots
+        return list(
+            self.connection.execute(
+                """SELECT * FROM odds_snapshots
             WHERE match_id = ? AND captured_at <= ? ORDER BY captured_at""",
-            (match_id, _dt(as_of)),
-        ))
+                (match_id, _dt(as_of)),
+            )
+        )
 
     def feature_as_of(self, match_id: str, feature_set: str, as_of: datetime) -> sqlite3.Row | None:
         return self.connection.execute(
@@ -354,11 +419,9 @@ class ResearchDatabase:
             (match_id, feature_set, _dt(as_of)),
         ).fetchone()
 
-    def insert_predictions(self, records: Iterable[object], team_ids: dict[str, str] | None = None) -> None:
+    def insert_predictions(self, records: Iterable[Any], team_ids: dict[str, str] | None = None) -> None:
         rows = list(records)
-        team_ids = team_ids or {
-            name: name for row in rows for name in (row.home_team, row.away_team)
-        }
+        team_ids = team_ids or {name: name for row in rows for name in (row.home_team, row.away_team)}
         for name, team_id in team_ids.items():
             self.upsert_team(team_id, name)
         self.connection.executemany(
@@ -368,14 +431,35 @@ class ResearchDatabase:
             market_home, market_draw, market_away, odds_home, odds_draw, odds_away,
             edge_home, edge_draw, edge_away, ev_home, ev_draw, ev_away)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            [(
-                row.match_id, row.forecast_timestamp, row.model_version,
-                team_ids[row.home_team], team_ids[row.away_team], row.home_win,
-                row.draw, row.away_win, row.actual, row.home_goals, row.away_goals,
-                row.log_loss, row.brier_score, row.market_home, row.market_draw,
-                row.market_away, row.odds_home, row.odds_draw, row.odds_away,
-                row.edge_home, row.edge_draw, row.edge_away, row.ev_home, row.ev_draw,
-                row.ev_away,
-            ) for row in rows],
+            [
+                (
+                    row.match_id,
+                    row.forecast_timestamp,
+                    row.model_version,
+                    team_ids[row.home_team],
+                    team_ids[row.away_team],
+                    row.home_win,
+                    row.draw,
+                    row.away_win,
+                    row.actual,
+                    row.home_goals,
+                    row.away_goals,
+                    row.log_loss,
+                    row.brier_score,
+                    row.market_home,
+                    row.market_draw,
+                    row.market_away,
+                    row.odds_home,
+                    row.odds_draw,
+                    row.odds_away,
+                    row.edge_home,
+                    row.edge_draw,
+                    row.edge_away,
+                    row.ev_home,
+                    row.ev_draw,
+                    row.ev_away,
+                )
+                for row in rows
+            ],
         )
         self.connection.commit()

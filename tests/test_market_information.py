@@ -13,7 +13,9 @@ from parlay.data.schemas import OddsSnapshot
 def test_external_information_is_timestamp_safe():
     as_of = datetime(2026, 9, 1, 12, tzinfo=timezone.utc)
     items = [
-        TeamNews("A", "news", "questionable", "source", as_of - timedelta(hours=1), as_of - timedelta(minutes=1)),
+        TeamNews(
+            "A", "news", "questionable", "source", as_of - timedelta(hours=1), as_of - timedelta(minutes=1)
+        ),
         InjuryReport("A", "p1", "out", "source", as_of + timedelta(minutes=1), as_of + timedelta(minutes=1)),
         LineupStatus("m1", "A", "confirmed", "source", as_of, as_of),
     ]

@@ -11,12 +11,11 @@ Per-competition result lag preserves correctness for EPL vs Championship
 (115m vs 118m by default, ~90m + added time).
 """
 
+from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone, date, time
-from typing import Iterable
+from datetime import datetime, time, timedelta, timezone
 
 from .schemas import Match
-
 
 # Per-competition conservative result availability lag
 RESULT_LAG_MINUTES: dict[str, int] = {

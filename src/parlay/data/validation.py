@@ -1,8 +1,8 @@
 """Validation rules that prevent silent data and leakage errors."""
 
 from collections import Counter
+from collections.abc import Iterable
 from datetime import date
-from typing import Iterable
 
 from .schemas import Match, OddsSnapshot
 

@@ -1,38 +1,17 @@
-"""Negative Binomial2 score model with mean/dispersion parameterization."""
+"""Negative Binomial (NB2) score model with mean/dispersion parameterization."""
 
-import math
+from __future__ import annotations
 
 import numpy as np
 
-from .numerics import DEFAULT_SCORE_CAP, DEFAULT_TRUNCATION_EPSILON
+from .numerics import (
+    DEFAULT_TRUNCATION_EPSILON,
+    grid_size,
+    negative_binomial_pmf,
+    normalized,
+)
 
-
-def _adaptive_nb_support(mean: float, dispersion: float, epsilon: float) -> int:
-    if not 0 < epsilon < 1:
-        raise ValueError("epsilon must be between 0 and 1")
-    cumulative = 0.0
-    for cutoff in range(DEFAULT_SCORE_CAP + 1):
-        cumulative += float(negative_binomial_pmf(np.array([cutoff]), mean, dispersion)[0])
-        if 1.0 - cumulative < epsilon:
-            return cutoff
-    return DEFAULT_SCORE_CAP
-
-
-def negative_binomial_pmf(k: np.ndarray, mean: float, dispersion: float) -> np.ndarray:
-    """Return NB2 probabilities where Var(Y) = mean + mean**2 / dispersion."""
-    if mean <= 0 or not math.isfinite(mean):
-        raise ValueError("mean must be finite and positive")
-    if dispersion <= 0 or not math.isfinite(dispersion):
-        raise ValueError("dispersion must be finite and positive")
-    values = np.asarray(k, dtype=int)
-    log_p = (
-        np.vectorize(math.lgamma)(values + dispersion)
-        - math.lgamma(dispersion)
-        - np.vectorize(math.lgamma)(values + 1)
-        + dispersion * math.log(dispersion / (dispersion + mean))
-        + values * math.log(mean / (dispersion + mean))
-    )
-    return np.exp(log_p)
+__all__ = ["estimate_dispersion", "negative_binomial_pmf", "score_matrix"]
 
 
 def estimate_dispersion(
@@ -43,60 +22,40 @@ def estimate_dispersion(
     floor: float = 1.0,
     ceiling: float = 200.0,
 ) -> float:
-    """Estimate NB2 dispersion via method of moments.
+    """Method-of-moments NB2 dispersion: ``phi = mu**2 / (Var(Y) - mu)``.
 
-    For NB2: Var(Y) = mu + mu^2 / phi  =>  phi = mu^2 / (Var(Y) - mu).
-    When data is equi- or under-dispersed relative to Poisson, phi is clamped
-    to ``ceiling`` (effectively recovering Poisson).
+    Equi- or under-dispersed data returns ``ceiling`` (effectively Poisson).
     """
     g = np.asarray(goals, dtype=float)
     mu = np.asarray(expected, dtype=float)
     w = np.ones(len(g), dtype=float) if weights is None else np.asarray(weights, dtype=float)
-
-    # Weighted residual variance
-    residuals = g - mu
-    weighted_mean_sq = np.average(residuals ** 2, weights=w)
+    weighted_mean_sq = np.average((g - mu) ** 2, weights=w)
     weighted_mean_mu = np.average(mu, weights=w)
-
     excess = weighted_mean_sq - weighted_mean_mu
     if excess <= 0:
-        # Data is under-dispersed or equi-dispersed => large phi (Poisson-like)
         return ceiling
-
-    phi = weighted_mean_mu ** 2 / excess
-    return float(max(floor, min(phi, ceiling)))
+    return float(max(floor, min(weighted_mean_mu**2 / excess, ceiling)))
 
 
-def score_matrix(home_mean: float, away_mean: float,
-                 home_dispersion: float, away_dispersion: float,
-                 max_goals: int | None = 10, *, epsilon: float = DEFAULT_TRUNCATION_EPSILON) -> np.ndarray:
-    """Return normalized P(home goals, away goals) on a finite score grid."""
-    if max_goals is not None and max_goals < 1:
-        raise ValueError("max_goals must be at least 1")
-    if max_goals is None:
-        home_k = _adaptive_nb_support(home_mean, home_dispersion, epsilon)
-        away_k = _adaptive_nb_support(away_mean, away_dispersion, epsilon)
-        max_goals = max(home_k, away_k)
-    goals = np.arange(max_goals + 1)
+def score_matrix(
+    home_mean: float,
+    away_mean: float,
+    home_dispersion: float,
+    away_dispersion: float,
+    max_goals: int | None = None,
+    *,
+    epsilon: float = DEFAULT_TRUNCATION_EPSILON,
+) -> np.ndarray:
+    """Return normalized ``P(home=i, away=j)`` on a finite grid."""
+    size = grid_size(
+        home_mean,
+        away_mean,
+        max_goals,
+        epsilon=epsilon,
+        home_dispersion=home_dispersion,
+        away_dispersion=away_dispersion,
+    )
+    goals = np.arange(size + 1)
     home = negative_binomial_pmf(goals, home_mean, home_dispersion)
     away = negative_binomial_pmf(goals, away_mean, away_dispersion)
-    matrix = np.outer(home, away)
-    total = matrix.sum()
-    if total <= 0 or not np.isfinite(total):
-        raise ValueError("negative-binomial score matrix has invalid probability")
-    return matrix / total
-
-
-def sample_scores(matrix: np.ndarray, size: int,
-                  rng: np.random.Generator | None = None) -> tuple[np.ndarray, np.ndarray]:
-    """Sample score pairs from a normalized score matrix."""
-    if size < 1:
-        raise ValueError("size must be positive")
-    matrix = np.asarray(matrix, dtype=float)
-    if matrix.ndim != 2 or matrix.shape[0] != matrix.shape[1]:
-        raise ValueError("score matrix must be square")
-    if np.any(matrix < 0) or not np.isclose(matrix.sum(), 1.0, atol=1e-10):
-        raise ValueError("score matrix must be non-negative and sum to one")
-    generator = rng or np.random.default_rng()
-    flat = generator.choice(matrix.size, size=size, p=matrix.ravel())
-    return np.unravel_index(flat, matrix.shape)
+    return normalized(np.outer(home, away), "negative-binomial score matrix")

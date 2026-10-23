@@ -1,14 +1,18 @@
 """Reproducible ingestion orchestration and dataset manifests."""
 
-from datetime import datetime, timezone
+from __future__ import annotations
+
 import hashlib
 import json
+from collections.abc import Sequence
+from datetime import datetime, timezone
 from pathlib import Path
+
+from parlay.features.historical import build_pre_match_features, features_json
 
 from .database import ResearchDatabase
 from .loaders import load_many
 from .normalization import TeamRegistry
-from parlay.features.historical import build_pre_match_features, features_json
 
 
 def sha256_file(path: str | Path) -> str:
@@ -20,12 +24,12 @@ def sha256_file(path: str | Path) -> str:
 
 
 def ingest_csv_files(
-    paths: list[str | Path],
+    paths: Sequence[str | Path],
     database: ResearchDatabase,
     *,
     registry: TeamRegistry | None = None,
     competition: str = "unknown",
-    season: str = "unknown",
+    season: str | None = None,
     feature_set: str = "rolling_v1",
     feature_window: int = 5,
     manifest_path: str | Path | None = None,
@@ -46,7 +50,7 @@ def ingest_csv_files(
         "created_at": datetime.now(timezone.utc).isoformat(),
         "files": [{"path": str(path), "sha256": sha256_file(path)} for path in paths],
         "competition": competition,
-        "season": season,
+        "season": season or "auto",
         "feature_set": feature_set,
         "feature_window": feature_window,
         "match_count": len(matches),

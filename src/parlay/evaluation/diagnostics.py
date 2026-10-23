@@ -1,39 +1,52 @@
-"""Statistical diagnostics (§19)."""
+"""Statistical diagnostics for fitted models and their residuals."""
+
+from __future__ import annotations
 
 from typing import Any
 
+import numpy as np
 
-def frequentist_diagnostics(mle_result: tuple) -> dict[str, Any]:
-    # mle_result = (att, def, mu, gamma, rho, converged, nll)
-    _, _, _, _, _, converged, nll = mle_result
-    return {"converged": bool(converged), "nll": float(nll), "warning": None if converged else "optimizer_failed"}
+from parlay.models.mle import RateFit
 
 
-def bayesian_diagnostics(idata) -> dict[str, Any]:
+def frequentist_diagnostics(fit: RateFit) -> dict[str, Any]:
+    """Optimizer status of an MLE fit."""
+    return {
+        "converged": fit.converged,
+        "nll": fit.negative_log_likelihood,
+        "iterations": fit.iterations,
+        "warning": None if fit.converged else f"optimizer_failed: {fit.message}",
+    }
+
+
+def bayesian_diagnostics(idata: Any) -> dict[str, Any]:
+    """R-hat, effective sample size and divergences of a PyMC posterior (needs ``arviz``)."""
     try:
         import arviz as az
-        rhat = az.rhat(idata)
-        ess = az.ess(idata)
-        # max rhat
-        rhat_max = float(rhat.to_array().values.max())
-        ess_min = int(ess.to_array().values.min())
-        divs = 0
-        if "sample_stats" in idata:
-            divs = int((idata.sample_stats["diverging"].values).sum())
-        return {"r_hat_max": rhat_max, "ess_min": ess_min, "divergences": divs, "ok": rhat_max < 1.01 and divs == 0}
-    except Exception as e:
-        return {"error": str(e)}
+    except ImportError as exc:  # pragma: no cover - optional dependency
+        return {"error": f"arviz unavailable: {exc}"}
+    rhat_max = float(az.rhat(idata).to_array().values.max())
+    ess_min = int(az.ess(idata).to_array().values.min())
+    divergences = int(idata.sample_stats["diverging"].values.sum()) if "sample_stats" in idata else 0
+    return {
+        "r_hat_max": rhat_max,
+        "ess_min": ess_min,
+        "divergences": divergences,
+        "ok": rhat_max < 1.01 and divergences == 0,
+    }
 
 
 def distribution_diagnostics(observed: list[float], expected: list[float]) -> dict[str, float]:
-    import numpy as np
-    obs = np.array(observed, dtype=float)
-    exp = np.array(expected, dtype=float)
-    resid = obs - exp
+    """Compare observed counts with fitted means; ``dispersion_index`` > 1 means over-dispersion.
+
+    ``dispersion_index`` is the Pearson statistic ``mean((y - mu)^2 / mu)``,
+    which is 1 in expectation under a correctly specified Poisson model.
+    """
+    obs = np.asarray(observed, dtype=float)
+    exp = np.maximum(np.asarray(expected, dtype=float), 1e-9)
     return {
-        "mean_observed": float(np.mean(obs)),
-        "mean_expected": float(np.mean(exp)),
-        "var_observed": float(np.var(obs)),
-        "var_expected": float(np.var(exp)),
-        "overdispersion": float(np.var(obs) / (np.mean(exp) + 1e-9)),
+        "mean_observed": float(obs.mean()),
+        "mean_expected": float(exp.mean()),
+        "var_observed": float(obs.var()),
+        "dispersion_index": float(np.mean((obs - exp) ** 2 / exp)),
     }

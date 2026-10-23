@@ -1,6 +1,19 @@
-"""Uncertainty / anomaly layer for model-market disagreement (§17)."""
+"""Treat large model-market disagreement as an anomaly to investigate, not an automatic edge.
+
+Liquid closing markets are hard to beat; a model that disagrees strongly with
+them is more often missing information (injuries, lineups, promoted-team
+uncertainty) than right. ``diagnose`` turns disagreement plus data-quality
+signals into a research decision: ``RESEARCH_SIGNAL``, ``WATCH``, ``PASS``
+or ``REJECT``.
+"""
+
+from __future__ import annotations
 
 from dataclasses import dataclass
+
+EXTREME_DISAGREEMENT = 0.25
+SIGNAL_DISAGREEMENT = 0.15
+WATCH_DISAGREEMENT = 0.08
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,7 +40,7 @@ def diagnose(
 ) -> DecisionDiagnostics:
     flags: list[str] = []
     disagreement = abs(model_probability - market_probability) if market_probability is not None else None
-    if disagreement is not None and disagreement > 0.25:
+    if disagreement is not None and disagreement > EXTREME_DISAGREEMENT:
         flags.append("extreme_model_market_disagreement")
     if posterior_std is not None and posterior_std > 0.15:
         flags.append("wide_posterior_uncertainty")
@@ -53,12 +66,10 @@ def diagnose(
     # Decision
     if "extreme_model_market_disagreement" in flags and uncertainty == "high":
         decision = "REJECT"
-    elif disagreement is not None and disagreement > 0.15 and uncertainty != "high":
+    elif disagreement is not None and disagreement > SIGNAL_DISAGREEMENT and uncertainty != "high":
         decision = "RESEARCH_SIGNAL"
-    elif disagreement is not None and disagreement > 0.08:
+    elif disagreement is not None and disagreement > WATCH_DISAGREEMENT:
         decision = "WATCH"
-    elif flags:
-        decision = "PASS"
     else:
         decision = "PASS"
 

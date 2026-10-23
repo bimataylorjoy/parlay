@@ -2,20 +2,21 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import math
-import numpy as np
+from collections.abc import Callable
+from dataclasses import dataclass
 
-from parlay.prediction.markets import fair_odds
+import numpy as np
 
 
 @dataclass(frozen=True, slots=True)
 class ScoreLeg:
     """A leg represented as a predicate over (home_goals, away_goals)."""
-    name: str
-    predicate: object
 
-    def mask(self, shape: tuple[int, int]) -> np.ndarray:
+    name: str
+    predicate: Callable[[np.ndarray, np.ndarray], np.ndarray]
+
+    def mask(self, shape: tuple[int, ...]) -> np.ndarray:
         home, away = np.indices(shape)
         return np.asarray(self.predicate(home, away), dtype=bool)
 
@@ -37,7 +38,12 @@ def joint_score_probability(matrix: np.ndarray, legs: list[ScoreLeg]) -> float:
     if not legs:
         raise ValueError("at least one leg is required")
     matrix = np.asarray(matrix, dtype=float)
-    if matrix.ndim != 2 or matrix.shape[0] != matrix.shape[1] or np.any(matrix < 0) or not np.isclose(matrix.sum(), 1.0):
+    if (
+        matrix.ndim != 2
+        or matrix.shape[0] != matrix.shape[1]
+        or np.any(matrix < 0)
+        or not np.isclose(matrix.sum(), 1.0)
+    ):
         raise ValueError("matrix must be a normalized non-negative square matrix")
     mask = np.ones(matrix.shape, dtype=bool)
     for leg in legs:
@@ -46,18 +52,22 @@ def joint_score_probability(matrix: np.ndarray, legs: list[ScoreLeg]) -> float:
 
 
 def parlay_from_score_matrix(
-    matrix: np.ndarray, legs: list[ScoreLeg], decimal_odds: float,
+    matrix: np.ndarray,
+    legs: list[ScoreLeg],
+    decimal_odds: float,
 ) -> ParlayResult:
     """Calculate joint EV and dependence diagnostics from one score matrix."""
     if decimal_odds <= 1:
         raise ValueError("decimal_odds must be greater than 1")
     matrix = np.asarray(matrix, dtype=float)
     masks = [leg.mask(matrix.shape) for leg in legs]
-    probabilities = {leg.name: float(matrix[mask].sum()) for leg, mask in zip(legs, masks)}
+    probabilities = {leg.name: float(matrix[mask].sum()) for leg, mask in zip(legs, masks, strict=True)}
     joint = float(matrix[np.logical_and.reduce(masks)].sum())
     independent = math.prod(probabilities.values())
     indicators = np.stack([mask.ravel().astype(float) for mask in masks])
-    covariance = np.cov(indicators, aweights=matrix.ravel(), bias=True) if len(legs) > 1 else np.array([[0.0]])
+    covariance = (
+        np.cov(indicators, aweights=matrix.ravel(), bias=True) if len(legs) > 1 else np.array([[0.0]])
+    )
     covariance = np.atleast_2d(covariance)
     diagnostics = []
     if len(legs) > 1 and not math.isclose(joint, independent, rel_tol=1e-6, abs_tol=1e-9):
@@ -93,4 +103,7 @@ def home_win_leg(name: str = "home_win") -> ScoreLeg:
 
 
 def correct_score_leg(home_goals: int, away_goals: int, name: str | None = None) -> ScoreLeg:
-    return score_leg(name or f"correct_score_{home_goals}_{away_goals}", lambda home, away: (home == home_goals) & (away == away_goals))
+    return score_leg(
+        name or f"correct_score_{home_goals}_{away_goals}",
+        lambda home, away: (home == home_goals) & (away == away_goals),
+    )

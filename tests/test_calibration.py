@@ -1,9 +1,14 @@
 from types import SimpleNamespace
 
-import pytest
 import numpy as np
+import pytest
 
-from parlay.evaluation.calibration import temperature_scale, find_optimal_temperature, apply_calibration, temporally_safe_calibration
+from parlay.evaluation.calibration import (
+    apply_calibration,
+    find_optimal_temperature,
+    temperature_scale,
+    temporally_safe_calibration,
+)
 
 
 def test_temperature_scale_one_is_identity():
@@ -44,23 +49,30 @@ def test_find_optimal_temperature_reduces_loss():
     # 4 times home loses, but we still gave it 0.9
     for _ in range(4):
         records.append(SimpleNamespace(home_win=0.9, draw=0.05, away_win=0.05, actual="away_win"))
-        
+
     t_opt = find_optimal_temperature(records)
     # Since model is overconfident, T should be > 1 to soften probs
     assert t_opt > 1.0
-    
+
     # Test apply calibration
     calibrated = apply_calibration(records, t_opt)
-    
+
     from parlay.evaluation.metrics import aggregate_scores, log_loss
-    orig_loss = aggregate_scores([
-        {"log_loss": log_loss({"home_win": r.home_win, "draw": r.draw, "away_win": r.away_win}, r.actual),
-         "brier_score": 0.0} 
-        for r in records
-    ])["log_loss"]
-    
+
+    orig_loss = aggregate_scores(
+        [
+            {
+                "log_loss": log_loss(
+                    {"home_win": r.home_win, "draw": r.draw, "away_win": r.away_win}, r.actual
+                ),
+                "brier_score": 0.0,
+            }
+            for r in records
+        ]
+    )["log_loss"]
+
     calib_loss = aggregate_scores(calibrated)["log_loss"]
-    
+
     # Calibration should strictly reduce or maintain loss
     assert calib_loss < orig_loss
 
@@ -68,12 +80,18 @@ def test_find_optimal_temperature_reduces_loss():
 def test_temporal_calibration_excludes_test_window():
     rows = []
     for i in range(15):
-        rows.append(SimpleNamespace(
-            forecast_timestamp=f"2024-01-{i + 1:02d}T00:00:00+00:00",
-            home_win=0.8, draw=0.1, away_win=0.1,
-            actual="home_win" if i % 2 == 0 else "away_win",
-        ))
-    temperature, calibrated, metrics = temporally_safe_calibration(rows, train_end="2024-01-05T00:00:00+00:00", calibrate_end="2024-01-10T00:00:00+00:00")
+        rows.append(
+            SimpleNamespace(
+                forecast_timestamp=f"2024-01-{i + 1:02d}T00:00:00+00:00",
+                home_win=0.8,
+                draw=0.1,
+                away_win=0.1,
+                actual="home_win" if i % 2 == 0 else "away_win",
+            )
+        )
+    temperature, calibrated, metrics = temporally_safe_calibration(
+        rows, train_end="2024-01-05T00:00:00+00:00", calibrate_end="2024-01-10T00:00:00+00:00"
+    )
     assert temperature > 0
     assert calibrated
     assert metrics["n"] == len(calibrated)

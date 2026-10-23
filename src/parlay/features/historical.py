@@ -1,16 +1,17 @@
 """Historical rolling features with strict pre-match information boundaries."""
 
-from dataclasses import asdict
-from datetime import date, datetime, timedelta, timezone
 import json
-import math
+from datetime import date, datetime, timedelta, timezone
 
 from parlay.data.schemas import Match
 from parlay.data.validation import validate_matches
+
 from .registry import FeatureSet, FeatureValue
 
 
-def build_pre_match_features(matches: list[Match], *, window: int = 5, forecast_lead_minutes: int = 60) -> dict[str, dict[str, float]]:
+def build_pre_match_features(
+    matches: list[Match], *, window: int = 5, forecast_lead_minutes: int = 60
+) -> dict[str, dict[str, float]]:
     """Build rolling features using InformationSet semantics (§1).
 
     Features for a match may only use historical matches whose
@@ -21,8 +22,11 @@ def build_pre_match_features(matches: list[Match], *, window: int = 5, forecast_
         raise ValueError("window must be positive")
     rows = sorted(validate_matches(matches), key=lambda row: (row.date, row.match_id))
     # History stores (known_at, date, goals_for, goals_against, won, corners..., shots...)
-    from datetime import datetime, timedelta, timezone, time as dtime
-    from parlay.data.information import InformationSet, RESULT_LAG_MINUTES
+    from datetime import datetime, timedelta, timezone
+    from datetime import time as dtime
+
+    from parlay.data.information import RESULT_LAG_MINUTES
+
     history: dict[str, list[tuple[datetime, date, int, int, bool, int, int, int, int]]] = {}
     output: dict[str, dict[str, float]] = {}
     for row in rows:
@@ -33,14 +37,14 @@ def build_pre_match_features(matches: list[Match], *, window: int = 5, forecast_
                 ft = ft.replace(tzinfo=timezone.utc)
             forecast_ts = ft - timedelta(minutes=forecast_lead_minutes)
         else:
-            forecast_ts = datetime.combine(row.date, dtime(0,0), tzinfo=timezone.utc)
+            forecast_ts = datetime.combine(row.date, dtime(0, 0), tzinfo=timezone.utc)
         team_history = {}
         for team in (row.home_team, row.away_team):
             # Filter knowable: known_at <= forecast_ts (per-competition lag inside InformationSet)
             prior_all_knowable = [item for item in history.get(team, []) if item[0] <= forecast_ts]
             prior = prior_all_knowable[-window:]
             count = len(prior)
-            # indices: 0=known_at, 1=date, 2=goals_for, 3=goals_against, 4=won, 5=corners_for, 6=corners_against, 7=shots_for, 8=shots_against
+            # history tuple: known_at, date, goals for/against, won, corners for/against, shots for/against
             goals_for = sum(item[2] for item in prior)
             goals_against = sum(item[3] for item in prior)
             wins = sum(item[4] for item in prior)
@@ -91,32 +95,41 @@ def build_pre_match_features(matches: list[Match], *, window: int = 5, forecast_
             lag = RESULT_LAG_MINUTES.get(row.competition, RESULT_LAG_MINUTES["default"])
             known_at = ka + timedelta(minutes=lag)
         else:
-            known_at = datetime.combine(row.date, dtime(23,59), tzinfo=timezone.utc)
-        history.setdefault(row.home_team, []).append((
-            known_at, row.date,
-            row.home_goals or 0,
-            row.away_goals or 0,
-            (row.home_goals or 0) > (row.away_goals or 0),
-            row.home_corners or 0,
-            row.away_corners or 0,
-            row.home_shots or 0,
-            row.away_shots or 0,
-        ))
-        history.setdefault(row.away_team, []).append((
-            known_at, row.date,
-            row.away_goals or 0,
-            row.home_goals or 0,
-            (row.away_goals or 0) > (row.home_goals or 0),
-            row.away_corners or 0,
-            row.home_corners or 0,
-            row.away_shots or 0,
-            row.home_shots or 0,
-        ))
+            known_at = datetime.combine(row.date, dtime(23, 59), tzinfo=timezone.utc)
+        history.setdefault(row.home_team, []).append(
+            (
+                known_at,
+                row.date,
+                row.home_goals or 0,
+                row.away_goals or 0,
+                (row.home_goals or 0) > (row.away_goals or 0),
+                row.home_corners or 0,
+                row.away_corners or 0,
+                row.home_shots or 0,
+                row.away_shots or 0,
+            )
+        )
+        history.setdefault(row.away_team, []).append(
+            (
+                known_at,
+                row.date,
+                row.away_goals or 0,
+                row.home_goals or 0,
+                (row.away_goals or 0) > (row.home_goals or 0),
+                row.away_corners or 0,
+                row.home_corners or 0,
+                row.away_shots or 0,
+                row.home_shots or 0,
+            )
+        )
     return output
 
 
 def build_pre_match_feature_sets(
-    matches: list[Match], *, window: int = 5, forecast_lead_minutes: int = 60,
+    matches: list[Match],
+    *,
+    window: int = 5,
+    forecast_lead_minutes: int = 60,
     source: str = "historical_match_results",
 ) -> dict[str, FeatureSet]:
     """Build rolling features with explicit computed/available timestamps.
@@ -124,9 +137,7 @@ def build_pre_match_feature_sets(
     The legacy dictionary builder remains unchanged for compatibility. This
     companion API makes provenance part of the data contract for new callers.
     """
-    values = build_pre_match_features(
-        matches, window=window, forecast_lead_minutes=forecast_lead_minutes
-    )
+    values = build_pre_match_features(matches, window=window, forecast_lead_minutes=forecast_lead_minutes)
     result: dict[str, FeatureSet] = {}
     for match in validate_matches(matches):
         if match.kickoff_at is not None:

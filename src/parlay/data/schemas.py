@@ -2,7 +2,6 @@
 
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import Optional
 
 
 @dataclass(frozen=True, slots=True)
@@ -17,14 +16,14 @@ class Match:
     away_goals: int | None
     neutral: bool = False
     source: str = "unknown"
-    source_timestamp: Optional[datetime] = None
-    kickoff_at: Optional[datetime] = None
-    home_sot: Optional[int] = None
-    away_sot: Optional[int] = None
-    home_corners: Optional[int] = None
-    away_corners: Optional[int] = None
-    home_shots: Optional[int] = None
-    away_shots: Optional[int] = None
+    source_timestamp: datetime | None = None
+    kickoff_at: datetime | None = None
+    home_sot: int | None = None
+    away_sot: int | None = None
+    home_corners: int | None = None
+    away_corners: int | None = None
+    home_shots: int | None = None
+    away_shots: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

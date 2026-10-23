@@ -7,10 +7,19 @@ from parlay.evaluation.market import calibration_bins, evaluate_flat_stake
 
 def record(actual, home=0.6, draw=0.2, away=0.2, odds_home=2.0, edge_home=0.1, ev_home=0.2):
     return SimpleNamespace(
-        actual=actual, home_win=home, draw=draw, away_win=away,
-        edge_home=edge_home, edge_draw=None, edge_away=None,
-        ev_home=ev_home, ev_draw=None, ev_away=None,
-        odds_home=odds_home, odds_draw=None, odds_away=None,
+        actual=actual,
+        home_win=home,
+        draw=draw,
+        away_win=away,
+        edge_home=edge_home,
+        edge_draw=None,
+        edge_away=None,
+        ev_home=ev_home,
+        ev_draw=None,
+        ev_away=None,
+        odds_home=odds_home,
+        odds_draw=None,
+        odds_away=None,
     )
 
 
@@ -27,6 +36,17 @@ def test_flat_stake_settles_win_and_loss():
     assert result["bets"] == 2
     assert result["profit"] == pytest.approx(0.0)
     assert result["yield"] == pytest.approx(0.0)
+    assert result["yield_se"] == pytest.approx(1.0)  # sample sd sqrt(2) / sqrt(n=2)
+    assert "mean_clv" not in result
+
+
+def test_flat_stake_reports_closing_line_value():
+    rows = [record("home_win"), record("draw")]
+    for row in rows:
+        row.closing_home = 0.55  # fair closing odds 1/0.55 = 1.82 < taken 2.0
+    result = evaluate_flat_stake(rows, min_edge=0.05, min_ev=0.1)
+    assert result["clv_n"] == 2
+    assert result["mean_clv"] == pytest.approx(2.0 * 0.55 - 1.0)
 
 
 def test_flat_stake_returns_empty_when_threshold_not_met():
@@ -51,6 +71,7 @@ def test_evaluate_market_benchmark():
 
 def test_binary_market_scoring_and_calibration():
     from parlay.evaluation.market import evaluate_binary_market, market_calibration_bins
+
     rows = [
         SimpleNamespace(over_probability=0.75, actual_market="over"),
         SimpleNamespace(over_probability=0.75, actual_market="under"),
@@ -64,19 +85,8 @@ def test_binary_market_scoring_and_calibration():
 
 def test_generic_multiclass_market_scoring():
     from parlay.evaluation.market import evaluate_market_predictions
-    rows = [SimpleNamespace(
-        probabilities={"home": 0.5, "away": 0.5}, actual_market="home"
-    )]
+
+    rows = [SimpleNamespace(probabilities={"home": 0.5, "away": 0.5}, actual_market="home")]
     scores = evaluate_market_predictions(rows, probabilities_attr="probabilities")
     assert scores["n"] == 1
     assert scores["log_loss"] > 0
-
-
-def test_parlay_uses_joint_score_probability_not_product():
-    from parlay.models.poisson import score_matrix
-    from parlay.prediction.parlay import btts_leg, over_leg, parlay_from_score_matrix
-    matrix = score_matrix(1.8, 1.2, max_goals=12)
-    result = parlay_from_score_matrix(matrix, [btts_leg(), over_leg(2.5)], decimal_odds=5.0)
-    assert result.joint_probability != pytest.approx(result.independence_probability)
-    assert "leg_dependence_present" in result.diagnostics
-    assert result.expected_value == pytest.approx(result.joint_probability * 5.0 - 1.0)

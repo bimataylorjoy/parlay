@@ -1,12 +1,15 @@
-"""Calibration and strictly out-of-sample market strategy evaluation."""
+"""Out-of-sample market scoring and transparent staking-strategy evaluation."""
 
-from dataclasses import asdict
-from typing import Iterable
+from __future__ import annotations
 
+import math
+from collections.abc import Iterable
+from typing import Any
 
-from parlay.evaluation.metrics import brier_score, log_loss
+from parlay.evaluation.metrics import PROBABILITY_FLOOR, brier_score, log_loss
 
 SELECTIONS = ("home", "draw", "away")
+_OUTCOME = {"home": "home_win", "draw": "draw", "away": "away_win"}
 
 
 def _multiclass_scores(probabilities: dict[str, float], actual: str) -> tuple[float, float]:
@@ -14,28 +17,21 @@ def _multiclass_scores(probabilities: dict[str, float], actual: str) -> tuple[fl
         raise ValueError("actual must be one of the supplied market outcomes")
     if any(value < 0 for value in probabilities.values()) or abs(sum(probabilities.values()) - 1.0) > 1e-8:
         raise ValueError("market probabilities must be non-negative and sum to one")
-    return -__import__("math").log(max(probabilities[actual], 1e-15)), sum(
-        (value - float(key == actual)) ** 2 for key, value in probabilities.items()
-    )
+    ll = -math.log(max(probabilities[actual], PROBABILITY_FLOOR))
+    brier = sum((value - float(key == actual)) ** 2 for key, value in probabilities.items())
+    return ll, brier
 
 
 def evaluate_market_predictions(
-    records: Iterable[object], *, probabilities_attr: str, actual_attr: str = "actual_market",
+    records: Iterable[Any], *, probabilities_attr: str, actual_attr: str = "actual_market"
 ) -> dict[str, float]:
-    """Score any mutually-exclusive market with log loss and multiclass Brier.
-
-    ``probabilities_attr`` must point to a probability mapping and
-    ``actual_attr`` to its realized selection. This deliberately does not
-    assume football 1X2 field names.
-    """
-    rows = list(records)
-    scored = []
-    for record in rows:
-        probabilities = getattr(record, probabilities_attr, None)
-        actual = getattr(record, actual_attr, None)
-        if probabilities is None or actual is None:
-            continue
-        scored.append(_multiclass_scores(probabilities, actual))
+    """Score any mutually exclusive market given a probability mapping and realized selection."""
+    scored = [
+        _multiclass_scores(getattr(record, probabilities_attr), getattr(record, actual_attr))
+        for record in records
+        if getattr(record, probabilities_attr, None) is not None
+        and getattr(record, actual_attr, None) is not None
+    ]
     if not scored:
         return {"n": 0.0, "log_loss": 0.0, "brier_score": 0.0}
     return {
@@ -46,9 +42,13 @@ def evaluate_market_predictions(
 
 
 def evaluate_binary_market(
-    records: Iterable[object], *, probability_attr: str, actual_attr: str,
+    records: Iterable[Any], *, probability_attr: str, actual_attr: str
 ) -> dict[str, float]:
-    """Score a binary market, excluding explicit pushes from binary metrics."""
+    """Score a binary market (over/under, yes/no); explicit pushes are excluded.
+
+    When a record has ``push_probability``, the probability is renormalized
+    to the decisive outcomes before scoring.
+    """
     rows = []
     pushes = 0
     for record in records:
@@ -62,173 +62,157 @@ def evaluate_binary_market(
         if actual not in {"over", "under", "yes", "no"}:
             raise ValueError(f"unsupported binary market outcome: {actual}")
         p = float(probability)
-        push_probability = getattr(record, "push_probability", 0.0) or 0.0
+        push_probability = float(getattr(record, "push_probability", 0.0) or 0.0)
         if push_probability:
-            decisive_mass = 1.0 - float(push_probability)
-            if decisive_mass <= 0:
+            decisive = 1.0 - push_probability
+            if decisive <= 0:
                 pushes += 1
                 continue
-            p = (p - 0.5 * float(push_probability)) / decisive_mass
+            p = (p - 0.5 * push_probability) / decisive
         positive = actual in {"over", "yes"}
         p_actual = p if positive else 1.0 - p
-        rows.append((-__import__("math").log(max(p_actual, 1e-15)), (p - float(positive)) ** 2))
+        rows.append((-math.log(max(p_actual, PROBABILITY_FLOOR)), (p - float(positive)) ** 2))
     if not rows:
         return {"n": 0.0, "pushes": float(pushes), "log_loss": 0.0, "brier_score": 0.0}
     return {
-        "n": float(len(rows)), "pushes": float(pushes),
+        "n": float(len(rows)),
+        "pushes": float(pushes),
         "log_loss": sum(row[0] for row in rows) / len(rows),
         "brier_score": sum(row[1] for row in rows) / len(rows),
     }
 
 
+def _reliability(values: list[tuple[float, float]], bins: int) -> list[dict[str, float]]:
+    output = []
+    for index in range(bins):
+        lower, upper = index / bins, (index + 1) / bins
+        selected = [v for v in values if lower <= v[0] < upper or (index == bins - 1 and v[0] == upper)]
+        if selected:
+            output.append(
+                {
+                    "bin_lower": lower,
+                    "bin_upper": upper,
+                    "count": float(len(selected)),
+                    "mean_probability": sum(v[0] for v in selected) / len(selected),
+                    "empirical_frequency": sum(v[1] for v in selected) / len(selected),
+                }
+            )
+    return output
+
+
 def market_calibration_bins(
-    records: Iterable[object], *, probability_attr: str, actual_attr: str, bins: int = 10,
+    records: Iterable[Any], *, probability_attr: str, actual_attr: str, bins: int = 10
 ) -> list[dict[str, float]]:
     """Reliability bins for binary over/yes probabilities."""
     if bins < 1:
         raise ValueError("bins must be positive")
-    values = []
-    for record in records:
-        probability = getattr(record, probability_attr, None)
-        actual = getattr(record, actual_attr, None)
-        if probability is not None and actual in {"over", "under", "yes", "no"}:
-            values.append((float(probability), float(actual in {"over", "yes"})))
-    output = []
-    for index in range(bins):
-        lower, upper = index / bins, (index + 1) / bins
-        selected = [row for row in values if lower <= row[0] < upper or (index == bins - 1 and row[0] <= upper)]
-        if selected:
-            output.append({
-                "bin_lower": lower, "bin_upper": upper, "count": float(len(selected)),
-                "mean_probability": sum(row[0] for row in selected) / len(selected),
-                "empirical_frequency": sum(row[1] for row in selected) / len(selected),
-            })
+    values = [
+        (float(getattr(r, probability_attr)), float(getattr(r, actual_attr) in {"over", "yes"}))
+        for r in records
+        if getattr(r, probability_attr, None) is not None
+        and getattr(r, actual_attr, None) in {"over", "under", "yes", "no"}
+    ]
+    return _reliability(values, bins)
+
+
+def calibration_bins(records: Iterable[Any], bins: int = 10) -> list[dict[str, float]]:
+    """Reliability bins for each 1X2 outcome (mean forecast vs empirical frequency)."""
+    if bins < 1:
+        raise ValueError("bins must be positive")
+    rows = list(records)
+    output: list[dict[str, Any]] = []
+    for selection in SELECTIONS:
+        outcome = _OUTCOME[selection]
+        values = [(float(getattr(r, outcome)), float(r.actual == outcome)) for r in rows]
+        output.extend({"selection": selection, **row} for row in _reliability(values, bins))
     return output
 
 
-def evaluate_market_benchmark(records: Iterable[object]) -> dict[str, float]:
-    """Compute benchmark Log Loss and Brier Score from de-vigged market prices.
-
-    Filters for records where market probabilities are available, providing
-    the gold-standard market efficiency baseline for the exact same sample.
-    """
-    market_log_losses = []
-    market_briers = []
-    for record in records:
-        mh = getattr(record, "market_home", None)
-        md = getattr(record, "market_draw", None)
-        ma = getattr(record, "market_away", None)
-        actual = getattr(record, "actual", None)
-        if mh is not None and md is not None and ma is not None and actual is not None:
-            probs = {"home_win": float(mh), "draw": float(md), "away_win": float(ma)}
-            market_log_losses.append(log_loss(probs, actual))
-            market_briers.append(brier_score(probs, actual))
-    if not market_log_losses:
+def evaluate_market_benchmark(records: Iterable[Any]) -> dict[str, float]:
+    """Log loss / Brier of de-vigged market probabilities on the records that have them."""
+    pairs = [
+        (
+            {
+                "home_win": float(r.market_home),
+                "draw": float(r.market_draw),
+                "away_win": float(r.market_away),
+            },
+            r.actual,
+        )
+        for r in records
+        if getattr(r, "market_home", None) is not None
+        and getattr(r, "market_draw", None) is not None
+        and getattr(r, "market_away", None) is not None
+    ]
+    if not pairs:
         return {"n": 0.0, "log_loss": 0.0, "brier_score": 0.0}
-    n = float(len(market_log_losses))
+    n = float(len(pairs))
     return {
         "n": n,
-        "log_loss": sum(market_log_losses) / n,
-        "brier_score": sum(market_briers) / n,
+        "log_loss": sum(log_loss(p, a) for p, a in pairs) / n,
+        "brier_score": sum(brier_score(p, a) for p, a in pairs) / n,
     }
 
 
-def calibration_bins(records: Iterable[object], bins: int = 10) -> list[dict[str, float]]:
-    """Group each model outcome probability and report empirical frequency."""
-    if bins < 1:
-        raise ValueError("bins must be positive")
-    rows: list[dict[str, float]] = []
-    for selection, actual_name in (("home", "home_win"), ("draw", "draw"), ("away", "away_win")):
-        values = []
-        for record in records:
-            probability = getattr(record, f"{selection}_win" if selection != "draw" else "draw")
-            values.append((float(probability), float(getattr(record, "actual") == actual_name)))
-        for index in range(bins):
-            lower = index / bins
-            upper = (index + 1) / bins
-            selected = [item for item in values if lower <= item[0] < upper or (index == bins - 1 and item[0] == upper)]
-            if selected:
-                rows.append({
-                    "selection": selection,
-                    "bin_lower": lower,
-                    "bin_upper": upper,
-                    "count": float(len(selected)),
-                    "mean_probability": sum(item[0] for item in selected) / len(selected),
-                    "empirical_frequency": sum(item[1] for item in selected) / len(selected),
-                })
-    return rows
+def evaluate_flat_stake(
+    records: Iterable[Any], *, min_edge: float = 0.03, min_ev: float = 0.02, stake: float = 1.0
+) -> dict[str, float]:
+    """One-selection-per-match flat-stake strategy on 1X2 prices.
 
-
-def evaluate_flat_stake(records: Iterable[object], *, min_edge: float = 0.03,
-                        min_ev: float = 0.02, stake: float = 1.0,
-                        max_stake_fraction: float | None = None,
-                        use_pinnacle_filter: bool = False,
-                        min_pinnacle_edge: float = -0.01) -> dict[str, float]:
-    """Evaluate a transparent one-selection-per-match flat-stake strategy.
-    
-    If use_pinnacle_filter is True, bets are skipped if the model's probability 
-    is significantly higher than Pinnacle's efficient probability (i.e. model 
-    probability - pinnacle probability < min_pinnacle_edge). This avoids betting
-    into sharp line movements.
+    A selection qualifies when both its probability edge over the de-vigged
+    market and its expected value clear the thresholds; the highest-EV
+    qualifying selection is bet. When closing probabilities are available the
+    result also reports closing-line value (CLV): the taken price relative to
+    the fair closing price, ``odds * p_closing - 1``. Positive mean CLV is the
+    most reliable evidence of genuine edge.
     """
     if min_edge < 0 or min_ev < 0 or stake <= 0:
         raise ValueError("thresholds must be non-negative and stake must be positive")
-    if max_stake_fraction is not None and not 0 < max_stake_fraction <= 1:
-        raise ValueError("max_stake_fraction must be in (0, 1]")
-    if max_stake_fraction is not None:
-        stake = min(stake, max_stake_fraction)
-    bets: list[tuple[float, float]] = []
+    profits: list[float] = []
+    clv: list[float] = []
     for record in records:
         candidates = []
         for selection in SELECTIONS:
             edge = getattr(record, f"edge_{selection}", None)
             ev = getattr(record, f"ev_{selection}", None)
             odds = getattr(record, f"odds_{selection}", None)
-            
-            if edge is not None and ev is not None and odds is not None and edge >= min_edge and ev >= min_ev:
-                # Pinnacle Filter
-                if use_pinnacle_filter:
-                    pin_prob = getattr(record, f"pin_{selection}", None)
-                    model_prob = getattr(record, f"{selection}_win" if selection != "draw" else "draw", None)
-                    if pin_prob is not None and model_prob is not None:
-                        pin_edge = model_prob - pin_prob
-                        if pin_edge < min_pinnacle_edge:
-                            continue # Skip this bet, Pinnacle disagrees too much
-                
-                candidates.append((float(ev), selection, float(odds)))
-                
+            if edge is None or ev is None or odds is None or edge < min_edge or ev < min_ev:
+                continue
+            candidates.append((float(ev), selection, float(odds)))
         if not candidates:
             continue
         _, selection, odds = max(candidates)
-        actual = getattr(record, "actual")
-        won = actual == {"home": "home_win", "draw": "draw", "away": "away_win"}[selection]
-        bets.append((stake * (odds - 1.0) if won else -stake, stake))
-    if not bets:
-        return {"bets": 0.0, "turnover": 0.0, "profit": 0.0, "yield": 0.0, "max_drawdown": 0.0}
-    cumulative = 0.0
-    peak = 0.0
-    max_drawdown = 0.0
-    for profit, _ in bets:
+        won = record.actual == _OUTCOME[selection]
+        profits.append(stake * (odds - 1.0) if won else -stake)
+        closing = getattr(record, f"closing_{selection}", None)
+        if closing is not None:
+            clv.append(odds * float(closing) - 1.0)
+    if not profits:
+        return {
+            "bets": 0.0,
+            "turnover": 0.0,
+            "profit": 0.0,
+            "yield": 0.0,
+            "yield_se": 0.0,
+            "max_drawdown": 0.0,
+        }
+    cumulative = peak = max_drawdown = 0.0
+    for profit in profits:
         cumulative += profit
         peak = max(peak, cumulative)
         max_drawdown = max(max_drawdown, peak - cumulative)
-    turnover = sum(item[1] for item in bets)
-    return {
-        "bets": float(len(bets)),
+    turnover = stake * len(profits)
+    mean = cumulative / len(profits)
+    variance = sum((p - mean) ** 2 for p in profits) / max(1, len(profits) - 1)
+    result = {
+        "bets": float(len(profits)),
         "turnover": turnover,
         "profit": cumulative,
         "yield": cumulative / turnover,
+        "yield_se": math.sqrt(variance / len(profits)) / stake,
         "max_drawdown": max_drawdown,
     }
-
-
-def compare_closing_prices(records: Iterable[object]) -> dict[str, float]:
-    """Summarize taken-vs-closing decimal prices when closing fields exist."""
-    ratios = []
-    for record in records:
-        for selection in SELECTIONS:
-            taken = getattr(record, f"odds_{selection}", None)
-            closing = getattr(record, f"closing_odds_{selection}", None)
-            if taken is not None and closing is not None and closing > 1:
-                ratios.append(float(taken) / float(closing) - 1.0)
-    return {"n": float(len(ratios)), "mean_price_clv": sum(ratios) / len(ratios) if ratios else 0.0}
+    if clv:
+        result["clv_n"] = float(len(clv))
+        result["mean_clv"] = sum(clv) / len(clv)
+    return result

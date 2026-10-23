@@ -1,115 +1,103 @@
-"""Hyperparameter optimization grid search."""
+"""Walk-forward hyperparameter search with an untouched holdout (nested tuning)."""
 
+from __future__ import annotations
+
+import itertools
+from dataclasses import replace
+from datetime import date, timedelta
 from typing import Any
-from parlay.data.schemas import Match
-from parlay.evaluation.backtest import run_backtest_full
+
+from parlay.data.schemas import Match, OddsSnapshot
+from parlay.evaluation.backtest import BacktestConfig, run_backtest
+from parlay.models.team_strength import DEFAULT_L2_REG
+
+DEFAULT_HALF_LIVES: tuple[float | None, ...] = (90.0, 180.0, 270.0, 365.0, 540.0, 730.0, None)
+DEFAULT_L2_GRID: tuple[float, ...] = (0.0, 1.0, 2.5, 5.0, 10.0, 20.0)
+
+
+def grid_search(
+    matches: list[Match],
+    config: BacktestConfig | None = None,
+    *,
+    half_lives: tuple[float | None, ...] = DEFAULT_HALF_LIVES,
+    l2_grid: tuple[float, ...] = (DEFAULT_L2_REG,),
+    odds: list[OddsSnapshot] | None = None,
+) -> list[dict[str, Any]]:
+    """Backtest every (half-life, L2) combination; rows sorted by log loss."""
+    base = config or BacktestConfig()
+    rows: list[dict[str, Any]] = []
+    for half_life, l2 in itertools.product(half_lives, l2_grid):
+        result = run_backtest(
+            matches, odds, replace(base, half_life_days=half_life, l2_reg=l2, model_version=None)
+        )
+        if not result.records:
+            continue
+        rows.append(
+            {
+                "half_life_days": half_life,
+                "l2_reg": l2,
+                "n": result.metrics["n"],
+                "log_loss": result.metrics["log_loss"],
+                "brier_score": result.metrics["brier_score"],
+                "rps": result.metrics["rps"],
+                "folds": result.metrics["folds"],
+            }
+        )
+    rows.sort(key=lambda row: float(row["log_loss"] or 0.0))
+    return rows
 
 
 def tune_half_life(
-    matches: list[Match],
-    *,
-    model: str = "poisson",
-    estimator: str = "mle",
-    half_life_candidates: list[float | None] | None = None,
-    initial_train_days: int = 730,
-    test_days: int = 30,
-    step_days: int | None = None,
-    max_goals: int = 10,
+    matches: list[Match], config: BacktestConfig | None = None, **kwargs: Any
 ) -> list[dict[str, Any]]:
-    """Evaluate backtest performance across different half_life_days values.
-    
-    Returns a list of dictionaries containing metrics for each candidate.
-    """
-    if half_life_candidates is None:
-        half_life_candidates = [90.0, 180.0, 270.0, 365.0, 540.0, 730.0, 1095.0, None]
-        
-    results = []
-    
-    for hl in half_life_candidates:
-        result = run_backtest_full(
-            matches, model=model, estimator=estimator,
-            initial_train_days=initial_train_days, test_days=test_days,
-            step_days=step_days, half_life_days=hl,
-            max_goals=max_goals,
-        )
-        
-        # Calculate stability
-        fold_log_losses = [fm.log_loss for fm in result.fold_metrics]
-        mean_ll = sum(fold_log_losses) / len(fold_log_losses) if fold_log_losses else 0.0
-        
-        results.append({
-            "half_life_days": hl,
-            "n": result.metrics["n"],
-            "log_loss": result.metrics["log_loss"],
-            "brier_score": result.metrics["brier_score"],
-            "folds": result.metrics["folds"],
-            "mean_fold_log_loss": mean_ll,
-        })
-        
-    # Sort by log loss (ascending)
-    results.sort(key=lambda x: x["log_loss"] if x["log_loss"] > 0 else float('inf'))
-    
-    return results
+    """Grid search over half-life only (L2 held at the configured value)."""
+    return grid_search(matches, config, **kwargs)
 
 
-def tune_half_life_nested(
+def nested_tuning(
     matches: list[Match],
+    config: BacktestConfig | None = None,
     *,
-    model: str = "poisson",
-    estimator: str = "mle",
-    half_life_candidates: list[float | None] | None = None,
-    development_end: str | None = None,
-    holdout_days: int = 90,
-    initial_train_days: int = 730,
-    test_days: int = 30,
+    half_lives: tuple[float | None, ...] = DEFAULT_HALF_LIVES,
+    l2_grid: tuple[float, ...] = DEFAULT_L2_GRID,
+    development_end: date | None = None,
+    holdout_days: int = 365,
+    odds: list[OddsSnapshot] | None = None,
 ) -> dict[str, Any]:
-    """Nested temporal tuning (§14): tune on development, evaluate on untouched holdout.
+    """Select hyperparameters on the development period only, then score them once on the holdout.
 
-    Returns {tuned_on, evaluated_on, best_half_life, holdout_metrics}
+    The holdout score is the honest estimate of out-of-sample performance;
+    the inner grid scores are optimistic by construction.
     """
-    from datetime import date, timedelta
-    if half_life_candidates is None:
-        half_life_candidates = [180.0, 365.0, 730.0, None]
-    # Split development vs holdout by date
-    sorted_matches = sorted(matches, key=lambda m: m.date)
-    last_date = sorted_matches[-1].date
-    if development_end:
-        dev_end = date.fromisoformat(development_end)
-    else:
-        dev_end = last_date - timedelta(days=holdout_days)
-    development = [m for m in sorted_matches if m.date <= dev_end]
-    holdout = [m for m in sorted_matches if m.date > dev_end]
+    base = config or BacktestConfig()
+    completed = sorted((m for m in matches if m.home_goals is not None), key=lambda m: m.date)
+    if not completed:
+        raise ValueError("no completed matches to tune on")
+    dev_end = development_end or completed[-1].date - timedelta(days=holdout_days)
+    development = [m for m in completed if m.date <= dev_end]
+    holdout = [m for m in completed if m.date > dev_end]
     if not development or not holdout:
-        raise ValueError("development/holdout split empty — check dates")
-    # Inner tuning on development
-    inner_results = tune_half_life(
-        development, model=model, estimator=estimator, half_life_candidates=half_life_candidates,
-        initial_train_days=initial_train_days, test_days=test_days,
+        raise ValueError("development/holdout split is empty; check the dates")
+    inner = grid_search(development, base, half_lives=half_lives, l2_grid=l2_grid, odds=odds)
+    if not inner:
+        raise ValueError("no hyperparameter combination produced predictions on the development period")
+    best = inner[0]
+    locked = replace(
+        base,
+        half_life_days=best["half_life_days"],
+        l2_reg=best["l2_reg"],
+        initial_train_days=max(base.initial_train_days, (dev_end - completed[0].date).days + 1),
+        evaluation_start=dev_end + timedelta(days=1),
+        model_version=None,
     )
-    best = min(inner_results, key=lambda x: x["log_loss"])
-    best_hl = best["half_life_days"]
-    # Final evaluation on holdout with locked config
-    from parlay.evaluation.backtest import run_backtest_full
-    first_date = sorted_matches[0].date
-    train_days = max(initial_train_days, (dev_end - first_date).days + 1)
-    holdout_res = run_backtest_full(
-        sorted_matches,
-        model=model, estimator=estimator, half_life_days=best_hl,
-        initial_train_days=train_days, test_days=test_days,
-        evaluation_start=(dev_end + timedelta(days=1)).isoformat(),
-    )
-    holdout_records = [r for r in holdout_res.records if r.forecast_timestamp[:10] > dev_end.isoformat()]
-    if not holdout_records:
-        raise ValueError("holdout evaluation produced no holdout predictions")
-    from dataclasses import asdict
-    from parlay.evaluation.metrics import aggregate_scores
-    holdout_metrics = aggregate_scores(asdict(r) for r in holdout_records)
-    holdout_metrics["n"] = float(len(holdout_records))
+    holdout_result = run_backtest(completed, odds, locked)
+    if not holdout_result.records:
+        raise ValueError("holdout evaluation produced no predictions")
     return {
         "tuned_on": f"development <= {dev_end.isoformat()} ({len(development)} matches)",
         "evaluated_on": f"holdout > {dev_end.isoformat()} ({len(holdout)} matches)",
-        "hyperparameters": {"half_life_days": best_hl},
+        "hyperparameters": {"half_life_days": best["half_life_days"], "l2_reg": best["l2_reg"]},
         "selection_metric": "log_loss",
-        "holdout_metrics": holdout_metrics,
-        "inner_results": inner_results,
+        "holdout_metrics": holdout_result.metrics,
+        "inner_results": inner,
     }

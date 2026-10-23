@@ -1,9 +1,11 @@
 """Reproducible raw-source acquisition with provenance metadata."""
 
-from datetime import datetime, timezone
+from __future__ import annotations
+
 import hashlib
 import json
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.request import Request, urlopen
 
@@ -29,27 +31,44 @@ def detect_season(source: str) -> str:
     return "unknown"
 
 
-# Standard football-data.co.uk season codes for EPL (E0.csv)
-FOOTBALL_DATA_EPL_SEASONS: dict[str, str] = {
-    "2017-18": "https://www.football-data.co.uk/mmz4281/1718/E0.csv",
-    "2018-19": "https://www.football-data.co.uk/mmz4281/1819/E0.csv",
-    "2019-20": "https://www.football-data.co.uk/mmz4281/1920/E0.csv",
-    "2020-21": "https://www.football-data.co.uk/mmz4281/2021/E0.csv",
-    "2021-22": "https://www.football-data.co.uk/mmz4281/2122/E0.csv",
-    "2022-23": "https://www.football-data.co.uk/mmz4281/2223/E0.csv",
-    "2023-24": "https://www.football-data.co.uk/mmz4281/2324/E0.csv",
-    "2024-25": "https://www.football-data.co.uk/mmz4281/2425/E0.csv",
+FOOTBALL_DATA_BASE_URL = "https://www.football-data.co.uk/mmz4281"
+
+# football-data.co.uk division code -> competition label used in the database.
+FOOTBALL_DATA_LEAGUES: dict[str, str] = {
+    "E0": "EPL",
+    "E1": "Championship",
+    "E2": "League One",
+    "E3": "League Two",
+    "SP1": "La Liga",
+    "D1": "Bundesliga",
+    "I1": "Serie A",
+    "F1": "Ligue 1",
+    "N1": "Eredivisie",
+    "P1": "Primeira Liga",
+    "SC0": "Scottish Premiership",
 }
 
 
-def acquire_csv(source: str | Path, snapshot_dir: str | Path = "data/raw/snapshots",
-                *, timeout: int = 30) -> tuple[Path, dict[str, object]]:
+def football_data_url(league: str, season_start: int) -> str:
+    """URL of one season file, e.g. ``("E0", 2025)`` -> ``.../2526/E0.csv``."""
+    code = f"{season_start % 100:02d}{(season_start + 1) % 100:02d}"
+    return f"{FOOTBALL_DATA_BASE_URL}/{code}/{league}.csv"
+
+
+FOOTBALL_DATA_EPL_SEASONS: dict[str, str] = {
+    f"{year}-{(year + 1) % 100:02d}": football_data_url("E0", year) for year in range(2017, 2027)
+}
+
+
+def acquire_csv(
+    source: str | Path, snapshot_dir: str | Path = "data/raw/snapshots", *, timeout: int = 30
+) -> tuple[Path, dict[str, object]]:
     """Copy a local file or download a CSV, then persist immutable provenance."""
     target_dir = Path(snapshot_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
     source_text = str(source)
     if source_text.startswith(("http://", "https://")):
-        request = Request(source_text, headers={"User-Agent": "parlay-research/0.1"})
+        request = Request(source_text, headers={"User-Agent": "parlay-research/0.2"})
         with urlopen(request, timeout=timeout) as response:
             data = response.read()
         original_name = Path(source_text.split("?", 1)[0]).name or "source.csv"

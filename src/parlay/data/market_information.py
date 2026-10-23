@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from statistics import mean
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,7 +19,9 @@ class TeamNews:
 
     def is_available_at(self, as_of: datetime) -> bool:
         cutoff = as_of if as_of.tzinfo else as_of.replace(tzinfo=timezone.utc)
-        available = self.available_at if self.available_at.tzinfo else self.available_at.replace(tzinfo=timezone.utc)
+        available = (
+            self.available_at if self.available_at.tzinfo else self.available_at.replace(tzinfo=timezone.utc)
+        )
         return available <= cutoff
 
 
@@ -36,7 +37,9 @@ class LineupStatus:
 
     def is_available_at(self, as_of: datetime) -> bool:
         cutoff = as_of if as_of.tzinfo else as_of.replace(tzinfo=timezone.utc)
-        available = self.available_at if self.available_at.tzinfo else self.available_at.replace(tzinfo=timezone.utc)
+        available = (
+            self.available_at if self.available_at.tzinfo else self.available_at.replace(tzinfo=timezone.utc)
+        )
         return available <= cutoff
 
 
@@ -52,7 +55,9 @@ class InjuryReport:
 
     def is_available_at(self, as_of: datetime) -> bool:
         cutoff = as_of if as_of.tzinfo else as_of.replace(tzinfo=timezone.utc)
-        available = self.available_at if self.available_at.tzinfo else self.available_at.replace(tzinfo=timezone.utc)
+        available = (
+            self.available_at if self.available_at.tzinfo else self.available_at.replace(tzinfo=timezone.utc)
+        )
         return available <= cutoff
 
 
@@ -82,22 +87,24 @@ def summarize_odds_movement(snapshots, *, as_of: datetime | None = None) -> list
     """
     cutoff = as_of
     rows = [row for row in snapshots if cutoff is None or row.captured_at <= cutoff]
-    groups = {}
+    groups: dict[tuple[str, str, str], list] = {}
     for row in rows:
         groups.setdefault((row.bookmaker, row.market, row.selection), []).append(row)
     output = []
     for (bookmaker, market, selection), values in groups.items():
         values.sort(key=lambda row: row.captured_at)
         first, latest = values[0], values[-1]
-        output.append(OddsMovementSummary(
-            bookmaker=bookmaker,
-            market=market,
-            selection=selection,
-            first_odds=float(first.odds),
-            latest_odds=float(latest.odds),
-            captured_at=latest.captured_at,
-            observations=len(values),
-            log_return=__import__("math").log(latest.odds / first.odds),
-            implied_probability_change=(1.0 / latest.odds) - (1.0 / first.odds),
-        ))
+        output.append(
+            OddsMovementSummary(
+                bookmaker=bookmaker,
+                market=market,
+                selection=selection,
+                first_odds=float(first.odds),
+                latest_odds=float(latest.odds),
+                captured_at=latest.captured_at,
+                observations=len(values),
+                log_return=__import__("math").log(latest.odds / first.odds),
+                implied_probability_change=(1.0 / latest.odds) - (1.0 / first.odds),
+            )
+        )
     return output

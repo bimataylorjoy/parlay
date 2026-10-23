@@ -1,84 +1,62 @@
 import numpy as np
 import pytest
-from datetime import date
-from parlay.data.schemas import Match
-from parlay.models.corners import (
-    CornerStrengthModel,
-    corner_match_betting,
-    corner_totals_probabilities,
-    fit_corner_strength,
-)
+
+from conftest import make_match, synthetic_league
+from parlay.evaluation.corners import run_corners_backtest, settle_total
+from parlay.models.corners import fit_corner_strength
+from parlay.prediction.markets import match_winner_counts, totals_probabilities
 
 
-def _make_match(mid: str, h: str, a: str, hg: int, ag: int, hc: int, ac: int, days_ago: int = 0) -> Match:
-    return Match(
-        match_id=mid,
-        date=date(2025, 1, 1),
-        competition="E0",
-        season="2425",
-        home_team=h,
-        away_team=a,
-        home_goals=hg,
-        away_goals=ag,
-        home_corners=hc,
-        away_corners=ac,
-    )
-
-
-def test_corner_strength_model_and_matrix():
-    matches = [
-        _make_match("m1", "Arsenal", "Chelsea", 2, 1, 8, 3),
-        _make_match("m2", "Chelsea", "Arsenal", 0, 1, 4, 7),
-        _make_match("m3", "Liverpool", "Chelsea", 3, 0, 9, 2),
-        _make_match("m4", "Arsenal", "Liverpool", 2, 2, 6, 6),
-    ]
-
-    model = fit_corner_strength(matches)
-    assert model.corner_attack["Arsenal"] > model.corner_attack["Chelsea"]
-
-    matrix = model.corner_matrix("Arsenal", "Chelsea")
+def test_corner_model_fits_overdispersed_counts():
+    rows = synthetic_league(rounds=10, corners=True)
+    model = fit_corner_strength(rows)
+    assert model.fit_converged
+    assert model.dispersion < 100  # simulated with NB dispersion 8
+    assert model.attack["Lions"] > model.attack["Foxes"]
+    matrix = model.corner_matrix("Lions", "Foxes")
     assert np.isclose(matrix.sum(), 1.0)
-    assert matrix.shape == (21, 21)
-
-    # Expected corners
-    exp_h, exp_a = model.expected_corners("Arsenal", "Chelsea")
-    assert exp_h > exp_a
-    assert 1.0 < exp_h < 15.0
+    home, away = model.expected_corners("Lions", "Foxes")
+    assert home > away > 0
 
 
-def test_corner_markets():
-    matches = [
-        _make_match("m1", "Arsenal", "Chelsea", 2, 1, 7, 4),
-        _make_match("m2", "Chelsea", "Arsenal", 1, 1, 5, 5),
-    ]
-    model = fit_corner_strength(matches)
-    matrix = model.corner_matrix("Arsenal", "Chelsea")
-
-    # Corner totals (10.5)
-    tot = corner_totals_probabilities(matrix, 10.5)
-    assert np.isclose(tot["over"] + tot["under"], 1.0)
-    assert tot["push"] == 0.0
-
-    # Corner totals quarter line (10.75)
-    tot_quarter = corner_totals_probabilities(matrix, 10.75)
-    assert np.isclose(sum(tot_quarter.values()), 1.0)
-
-    # 1X2 Most corners
-    match_1x2 = corner_match_betting(matrix)
-    assert np.isclose(sum(match_1x2.values()), 1.0)
-    assert match_1x2["home_most"] > 0
+def test_corner_markets_and_quarter_lines():
+    model = fit_corner_strength(synthetic_league(rounds=4, corners=True))
+    matrix = model.corner_matrix("Hawks", "Bears")
+    half = totals_probabilities(matrix, 10.5)
+    assert half["push"] == 0.0 and np.isclose(half["over"] + half["under"], 1.0)
+    quarter = totals_probabilities(matrix, 10.75)
+    assert np.isclose(sum(quarter.values()), 1.0)
+    winner = match_winner_counts(matrix)
+    assert np.isclose(sum(winner.values()), 1.0)
 
 
-def test_corners_backtest_is_independent_and_temporal():
-    from datetime import timedelta
-    from parlay.evaluation.corners import run_corners_backtest
-    start = date(2024, 1, 1)
-    rows = [Match(
-        match_id=f"bt-{i}", date=start + timedelta(days=i), competition="EPL",
-        season="test", home_team="A", away_team="B", home_goals=1, away_goals=0,
-        home_corners=5 + (i % 3), away_corners=4 + (i % 2),
-    ) for i in range(18)]
-    result = run_corners_backtest(rows, line=10.5, initial_train_days=4, test_days=2)
+def test_unseen_team_gets_league_average_and_no_data_falls_back():
+    model = fit_corner_strength(synthetic_league(rounds=3, corners=True))
+    assert model.expected_corners("Newcomer", "Lions")[0] > 0
+    fallback = fit_corner_strength([make_match()])
+    assert not fallback.fit_converged and "fallback" in fallback.fit_warning
+
+
+def test_fixed_dispersion_changes_the_distribution():
+    rows = synthetic_league(rounds=5, corners=True)
+    poisson_like = fit_corner_strength(rows, dispersion=900.0).corner_matrix("Lions", "Foxes")
+    dispersed = fit_corner_strength(rows, dispersion=3.0).corner_matrix("Lions", "Foxes")
+    assert not np.allclose(poisson_like, dispersed, atol=1e-3)
+
+
+@pytest.mark.parametrize(
+    "total,line,expected", [(11, 10.5, "over"), (10, 10.0, "push"), (9, 10.5, "under"), (10, 10.25, "split")]
+)
+def test_settle_total(total, line, expected):
+    assert settle_total(total, line) == expected
+
+
+def test_corners_backtest_is_walk_forward():
+    rows = synthetic_league(rounds=6, corners=True)
+    result = run_corners_backtest(rows, line=10.5, initial_train_days=60, test_days=14)
     assert result.records
     assert result.metadata["market"] == "corners_total"
     assert result.metrics["records"] == len(result.records)
+    assert result.metrics["n"] + result.metrics["pushes"] + result.metrics["split_settlements"] == len(
+        result.records
+    )
