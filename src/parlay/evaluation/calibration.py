@@ -81,8 +81,9 @@ def temporally_safe_calibration(
 
     With explicit boundaries the calibration window is
     ``train_end < forecast <= calibrate_end`` and the test window is
-    ``forecast > calibrate_end``; otherwise the last 40% of records is split
-    20/20 chronologically. Returns ``(T, calibrated_test_records, test_metrics)``.
+    ``forecast > calibrate_end``; otherwise the last ~40% of records is split
+    ~20/20 chronologically at forecast-time boundaries.
+    Returns ``(T, calibrated_test_records, test_metrics)``.
     """
     rows = sorted(records, key=lambda r: r.forecast_timestamp)
     if len(rows) < 10:
@@ -93,11 +94,14 @@ def temporally_safe_calibration(
         if not calibrate or not test:
             raise ValueError("calibration/test windows are empty; check the timestamps")
     else:
+        # Split on timestamps, not positions: many matches share a kickoff time.
         n_part = max(1, len(rows) // 5)
-        calibrate = rows[-2 * n_part : -n_part]
-        test = rows[-n_part:]
-        if calibrate[-1].forecast_timestamp >= test[0].forecast_timestamp:
-            raise ValueError("calibration and test windows overlap in time")
+        test_start = rows[-n_part].forecast_timestamp
+        calibrate_start = rows[-2 * n_part].forecast_timestamp
+        test = [r for r in rows if r.forecast_timestamp >= test_start]
+        calibrate = [r for r in rows if calibrate_start <= r.forecast_timestamp < test_start]
+        if not calibrate:
+            raise ValueError("not enough distinct forecast times for a calibration window")
     temperature = find_optimal_temperature(calibrate)
     calibrated = apply_calibration(test, temperature)
     return temperature, calibrated, aggregate_scores(calibrated)

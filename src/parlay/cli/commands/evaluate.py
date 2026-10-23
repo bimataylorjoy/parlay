@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import math
 from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
@@ -301,8 +300,8 @@ def run_calibrate(args: argparse.Namespace) -> int:
     print(f"Optimal temperature T = {temperature:.4f}")
     print(f"Test log loss  {original['log_loss']:.4f} -> {calibrated_metrics['log_loss']:.4f}")
     print(f"Test Brier     {original['brier_score']:.4f} -> {calibrated_metrics['brier_score']:.4f}")
-    if math.isclose(temperature, 1.0, abs_tol=1e-3):
-        print("The model is already well calibrated (T ≈ 1).")
+    if abs(temperature - 1.0) < 0.03 or calibrated_metrics["log_loss"] >= original["log_loss"]:
+        print("The model is already well calibrated: temperature scaling does not improve the test window.")
     elif temperature > 1.0:
         print("T > 1: the model was over-confident; probabilities are softened toward uniform.")
     else:

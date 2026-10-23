@@ -96,3 +96,24 @@ def test_temporal_calibration_excludes_test_window():
     assert calibrated
     assert metrics["n"] == len(calibrated)
     assert all(row["forecast_timestamp"] > "2024-01-10T00:00:00+00:00" for row in calibrated)
+
+
+def test_default_split_never_puts_one_kickoff_in_both_windows():
+    from types import SimpleNamespace
+
+    from parlay.evaluation.calibration import temporally_safe_calibration
+
+    rows = [
+        SimpleNamespace(
+            forecast_timestamp=f"2024-01-{1 + i // 5:02d}T14:00:00+00:00",
+            home_win=0.5,
+            draw=0.3,
+            away_win=0.2,
+            actual=("home_win", "draw", "away_win")[i % 3],
+        )
+        for i in range(52)
+    ]
+    _, calibrated, metrics = temporally_safe_calibration(rows)
+    test_times = {row["forecast_timestamp"] for row in calibrated}
+    assert metrics["n"] == len(calibrated)
+    assert min(test_times) > "2024-01-08"
