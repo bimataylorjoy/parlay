@@ -218,7 +218,7 @@ Run `parlay <command> --help` for every option.
 | `backtest-value` | replay the value engine on historical football-data prices |
 | `anchor-test` | test whether the goal model or other features add information to the Pinnacle price |
 | `daily` | results, odds syncs, CLV/settlement, value bets (paper) and report in one go |
-| `telegram` | Telegram bot (`/value`, `/ticket`, `/bet`, `/report`, ...) with the watcher's alerts; `--setup` once |
+| `telegram` | button-driven Telegram bot for beginners (value-bet cards, parlay slip, report, alerts, daily upkeep); `--setup` once |
 | `ticket` | price a mix parlay against Pinnacle; legs from value bets, `--leg`, or `--favourites`; `--record` it |
 | `watch` | re-price each kickoff slot ~50 min before kickoff (after lineups); optional Telegram alerts |
 | `sync-sportmonks` / `predict-sportmonks` | fixtures, O/U 2.5 prices and team news from Sportmonks (`SPORTMONKS_API_TOKEN`) |

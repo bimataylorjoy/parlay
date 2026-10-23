@@ -227,7 +227,11 @@ class Watcher:
         self._record(slot, now, report)
         if self.notifier and (report.bets or self.config.notify_empty or report.status != "ok"):
             try:
-                self.notifier.send(format_slot_message(report, self.config.bankroll))
+                send_report = getattr(self.notifier, "send_report", None)
+                if send_report is not None:  # rich notifiers (the Telegram bot) render their own cards
+                    send_report(report, self.config.bankroll)
+                else:
+                    self.notifier.send(format_slot_message(report, self.config.bankroll))
             except OSError as exc:
                 print(f"notification failed: {exc}")
         return report

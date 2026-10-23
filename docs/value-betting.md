@@ -113,9 +113,18 @@ parlay telegram --setup      # detects your chat id, saves it, sends a welcome m
 parlay telegram              # bot + lineup-window watcher in one process
 ```
 
-The bot answers only your chat id: `/value`, `/parlay`, `/ticket`,
-`/bet KEY STAKE [ODDS]`, `/paper`, `/open`, `/report`, `/next`, `/sync`,
-`/credits`; watcher slot alerts arrive as messages.
+The bot answers only your chat id and is driven by buttons (Indonesian, for
+beginners). Each value bet is a card: what to bet in plain words ("Menang
+Arsenal", "Over 2,5 gol — menang jika total gol ≥ 3"), the bookmaker odds and
+fair odds, win probability, EV in money per Rp1.000, a stake suggestion in
+money (respecting `PARLAY_MIN_STAKE`), and buttons **✅ Saya pasang** (asks
+the stake; `50rb`, `1jt`, `50rb@2,15` for a different price), **🧪 Simulasi**
+and **➕ Tambah ke parlay**. The **🎟 Slip parlay** shows the ticket's odds,
+win probability and EV and refuses negative tickets. **📊 Laporan** explains
+profit and CLV in plain words. Every morning (06:00 local, `PARLAY_TIMEZONE`,
+default Asia/Jakarta) the bot fetches results and fresh prices, settles bets
+and reports the outcome; watcher alerts arrive as cards. Typed commands:
+`/menu`, `/value`, `/slip`, `/laporan`, `/jadwal`, `/modal 1jt`, `/bantuan`.
 
 **Cron** (keeps running after reboots; keep secrets out of the repository):
 
