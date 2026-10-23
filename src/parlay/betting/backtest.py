@@ -13,6 +13,7 @@ from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date
+from typing import Any
 
 from parlay.data.odds_columns import parse_market
 from parlay.data.schemas import Match, OddsSnapshot
@@ -149,3 +150,99 @@ def run_value_backtest(
             groups[key(s)].append(s)
         breakdown[name] = {label: _summary(rows) for label, rows in sorted(groups.items())}
     return ValueBacktestResult(bets=settled, metrics=metrics, breakdown=breakdown)
+
+
+@dataclass(frozen=True, slots=True)
+class ParlayBacktestResult:
+    tickets: list[dict[str, Any]]
+    metrics: dict[str, float]
+
+
+def _leg_return(result: str, odds: float) -> float:
+    return {"win": odds, "half_win": (1.0 + odds) / 2.0, "push": 1.0, "half_loss": 0.5}.get(result, 0.0)
+
+
+def _losing_streak(profits: list[float]) -> int:
+    best = current = 0
+    for profit in profits:
+        current = current + 1 if profit < 0 else 0
+        best = max(best, current)
+    return best
+
+
+def run_parlay_backtest(
+    result: ValueBacktestResult,
+    *,
+    max_legs: int = 3,
+    min_legs: int = 2,
+    kelly_fraction: float = 0.25,
+    max_stake: float = 0.02,
+) -> ParlayBacktestResult:
+    """Combine each day's value bets at one bookmaker into a ticket (one leg per match, best EV first).
+
+    Reports flat one-unit tickets and compounding Kelly, next to the same legs bet as singles.
+    """
+    from .tickets import Leg, Ticket
+
+    groups: dict[tuple[date, str], dict[str, SettledValueBet]] = defaultdict(dict)
+    for settled in result.bets:
+        key = (settled.bet.match_date, settled.bet.bookmaker)
+        current = groups[key].get(settled.bet.match_id)
+        if current is None or settled.bet.expected_value > current.bet.expected_value:
+            groups[key][settled.bet.match_id] = settled
+    tickets: list[dict[str, Any]] = []
+    for (day, book), by_match in sorted(groups.items()):
+        legs = sorted(by_match.values(), key=lambda s: s.bet.expected_value, reverse=True)[:max_legs]
+        if len(legs) < min_legs:
+            continue
+        ticket = Ticket(book, tuple(Leg.from_value_bet(s.bet) for s in legs))
+        multiple = math.prod(_leg_return(s.result, s.bet.effective_odds) for s in legs)
+        closing = [s.closing_probability for s in legs]
+        clv = (
+            ticket.combined_odds * math.prod(closing) - 1.0  # type: ignore[arg-type]
+            if all(c is not None for c in closing)
+            else None
+        )
+        tickets.append(
+            {
+                "date": day.isoformat(),
+                "bookmaker": book,
+                "legs": len(legs),
+                "odds": ticket.combined_odds,
+                "win_probability": ticket.win_probability,
+                "expected_value": ticket.expected_value,
+                "stake_fraction": ticket.stake_fraction(kelly_fraction=kelly_fraction, max_stake=max_stake),
+                "profit": multiple - 1.0,
+                "clv": clv,
+                "singles_profit": sum(s.flat_profit for s in legs),
+            }
+        )
+    if not tickets:
+        return ParlayBacktestResult([], {"tickets": 0.0})
+    profits = [t["profit"] for t in tickets]
+    mean, se = _mean_se(profits)
+    clvs = [t["clv"] for t in tickets if t["clv"] is not None]
+    clv_mean, clv_se = _mean_se(clvs)
+    singles = [t["singles_profit"] / t["legs"] for t in tickets]
+    singles_mean, singles_se = _mean_se(singles)
+    log_growth = sum(math.log(max(1e-9, 1.0 + t["stake_fraction"] * t["profit"])) for t in tickets)
+    return ParlayBacktestResult(
+        tickets,
+        {
+            "tickets": float(len(tickets)),
+            "mean_legs": sum(t["legs"] for t in tickets) / len(tickets),
+            "mean_odds": sum(t["odds"] for t in tickets) / len(tickets),
+            "mean_expected_value": sum(t["expected_value"] or 0.0 for t in tickets) / len(tickets),
+            "mean_win_probability": sum(t["win_probability"] or 0.0 for t in tickets) / len(tickets),
+            "hit_rate": sum(1 for p in profits if p > 0) / len(profits),
+            "yield": mean,
+            "yield_se": se,
+            "clv_n": float(len(clvs)),
+            "mean_clv": clv_mean,
+            "clv_se": clv_se,
+            "longest_losing_streak": float(_losing_streak(profits)),
+            "kelly_bankroll_multiple": math.exp(log_growth),
+            "singles_yield": singles_mean,
+            "singles_yield_se": singles_se,
+        },
+    )

@@ -101,17 +101,21 @@ class ValueBet:
 
     @property
     def description(self) -> str:
-        kind, line = parse_market(self.market)
-        if kind == "1x2":
-            pick = {"home": self.home_team, "away": self.away_team, "draw": "Draw"}[self.selection]
-        elif kind == "totals":
-            pick = f"{self.selection.capitalize()} {line:g}"
-        else:
-            assert line is not None
-            team_line = line if self.selection == "home" else -line
-            team = self.home_team if self.selection == "home" else self.away_team
-            pick = f"{team} {team_line + 0.0:+g}"
-        return f"{self.home_team} vs {self.away_team}: {pick}"
+        return describe_pick(self.home_team, self.away_team, self.market, self.selection)
+
+
+def describe_pick(home_team: str, away_team: str, market: str, selection: str) -> str:
+    """Human-readable pick, e.g. ``"Arsenal vs Everton: Over 2.5"``."""
+    kind, line = parse_market(market)
+    if kind == "1x2":
+        pick = {"home": home_team, "away": away_team, "draw": "Draw"}[selection]
+    elif kind == "totals":
+        pick = f"{selection.capitalize()} {line:g}"
+    else:
+        assert line is not None
+        team_line = line if selection == "home" else -line
+        pick = f"{home_team if selection == 'home' else away_team} {team_line + 0.0:+g}"
+    return f"{home_team} vs {away_team}: {pick}"
 
 
 def commission_for(bookmaker: str, override: float | None = None) -> float:

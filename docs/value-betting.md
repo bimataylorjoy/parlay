@@ -126,6 +126,37 @@ export TELEGRAM_BOT_TOKEN=... TELEGRAM_CHAT_ID=...
 30 7 * * *  cd ~/parlay && . ~/.config/parlay/env && .venv/bin/parlay daily >> ~/parlay-daily.log 2>&1
 ```
 
+## Mix parlays (accumulators)
+
+For legs on different matches, `ticket odds = Π leg odds` and
+`EV = Π (1 + EV_leg) − 1`: the bookmaker margin compounds with every leg.
+
+* Live 1xBet 1X2 prices (Oct 2026) average **−4.0%** EV per selection against
+  the Pinnacle fair price; a ticket of 10 favourites priced at 495 had fair
+  odds 690, i.e. **EV −28%**. Typical legs: 2 → −8%, 4 → −15%, 10 → −33%.
+* Only legs that are value bets on their own compound into a positive ticket.
+  Historically (2019–26, one ticket per day and bookmaker, ≤ 3 legs): 33
+  tickets, expected EV +12.5%, ticket CLV +11.9% ± 3.2%, but a 9% hit rate,
+  a 19-ticket losing streak and a Kelly bankroll multiple of 1.03 — no better
+  than the same legs as singles, with far more variance.
+* Legs on the same match are correlated and are rejected; exchanges do not
+  offer accumulators. Odds boosts (`--boost 0.10`) are the main way a ticket of
+  near-fair legs becomes positive.
+
+```bash
+parlay ticket vb:0bb3a596 vb:2ce5ad1d                       # legs from `parlay value`
+parlay ticket --leg "Arsenal vs Everton:1x2:1" --leg "Hull vs Brentford:totals_2.5:over@1.95"
+parlay ticket --favourites --max-legs 10                     # "everything at once": see the EV damage
+parlay ticket ... --boost 0.10 --record real --stake 5       # log a ticket you placed
+parlay value --parlay --max-legs 3 --paper                   # suggested tickets from value bets only
+parlay backtest-value --from 2019-07-01 --parlay             # historical test of the parlay strategy
+```
+
+Tickets are settled leg by leg (push, half win and half loss included), get
+a CLV of `ticket odds × Π p_close − 1`, and appear in `bets list` and
+`bets report`. The Kelly stake shrinks with the number of legs because the
+uncertainty of `Π p` grows.
+
 ## Reading the report
 
 * **CLV** = taken price × fair closing probability − 1. Its standard error

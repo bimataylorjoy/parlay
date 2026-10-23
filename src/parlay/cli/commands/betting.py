@@ -10,7 +10,7 @@ from pathlib import Path
 
 from parlay.betting import Ledger, ValueConfig, find_value_bets, run_value_backtest
 from parlay.betting.reference import REFERENCE_POLICIES
-from parlay.betting.value import MARKET_KINDS, ValueBet, commission_for
+from parlay.betting.value import MARKET_KINDS, ValueBet, commission_for, describe_pick
 from parlay.cli._common import DEFAULT_SNAPSHOT_DIR, add_database, iso_date
 from parlay.cli.render import table
 from parlay.data.database import ResearchDatabase
@@ -107,6 +107,35 @@ def register(commands: argparse._SubParsersAction) -> None:
     daily.add_argument("--no-paper", action="store_true", help="do not log value bets as paper bets")
     daily.set_defaults(handler=run_daily)
 
+    ticket = commands.add_parser(
+        "ticket",
+        help="price a mix parlay (accumulator) against Pinnacle fair probabilities",
+        description="Legs: value-bet keys (vb:...) and/or --leg 'Home vs Away:MARKET:SELECTION' "
+        "(MARKET = 1x2, totals_2.5, ah_-0.75; SELECTION = home/draw/away, 1/X/2, over/under). "
+        "--favourites adds the 1X2 favourite of every upcoming match.",
+    )
+    add_database(ticket)
+    ticket.add_argument("keys", nargs="*", help="value-bet keys printed by `parlay value`")
+    ticket.add_argument("--leg", action="append", default=[], help="'Home vs Away:MARKET:SELECTION[@odds]'")
+    ticket.add_argument("--favourites", action="store_true", help="add the favourite of every upcoming match")
+    ticket.add_argument("--days", type=int, default=3, help="window for --favourites (default: 3 days)")
+    ticket.add_argument("--max-legs", type=int, default=10, help="cap on --favourites legs (default: 10)")
+    ticket.add_argument("--book", default="1xBet", help="bookmaker of the ticket (default: 1xBet)")
+    ticket.add_argument("--reference", choices=REFERENCE_POLICIES, default="pinnacle")
+    ticket.add_argument(
+        "--boost", type=float, default=0.0, help="accumulator odds boost, e.g. 0.10 for +10%%"
+    )
+    ticket.add_argument(
+        "--ticket-odds", type=float, help="total odds shown on the betslip (overrides the product)"
+    )
+    ticket.add_argument("--bankroll", type=float, default=1000.0)
+    ticket.add_argument("--kelly-fraction", type=float, default=0.25)
+    ticket.add_argument("--max-stake", type=float, default=0.02)
+    ticket.add_argument("--record", choices=("paper", "real"), help="store the ticket in the ledger")
+    ticket.add_argument("--stake", type=float, help="stake to record (default: the Kelly suggestion)")
+    ticket.add_argument("--as-of", type=_utc_datetime, help="price as of this UTC time (default: now)")
+    ticket.set_defaults(handler=run_ticket)
+
     watch = commands.add_parser(
         "watch",
         help="re-price every kickoff slot ~50 min before kickoff (after lineups) and report value bets",
@@ -167,6 +196,10 @@ def register(commands: argparse._SubParsersAction) -> None:
         "--as-of", type=_utc_datetime, help="evaluate as of this UTC time (replay); default: now"
     )
     value.add_argument("--output", type=Path, help="write the value bets to CSV")
+    value.add_argument(
+        "--parlay", action="store_true", help="also build mix-parlay tickets from the value bets"
+    )
+    value.add_argument("--max-legs", type=int, default=3, help="legs per suggested ticket (default: 3)")
     value.set_defaults(handler=run_value)
 
     bets = commands.add_parser("bets", help="bet ledger: add, update with closing prices/results, report")
@@ -222,6 +255,10 @@ def register(commands: argparse._SubParsersAction) -> None:
     backtest.add_argument("--from", dest="start", type=iso_date, help="first match date")
     backtest.add_argument("--to", dest="end", type=iso_date, help="last match date")
     backtest.add_argument("--output-dir", type=Path, default=Path("outputs/value_backtest"))
+    backtest.add_argument(
+        "--parlay", action="store_true", help="also test daily mix parlays from the value bets"
+    )
+    backtest.add_argument("--max-legs", type=int, default=3, help="legs per parlay ticket (default: 3)")
     backtest.set_defaults(handler=run_backtest_value)
 
 
@@ -329,6 +366,8 @@ def run_value(args: argparse.Namespace) -> int:
                 is not None
             )
         print(f"\nRecorded {recorded} new paper bets.")
+    if args.parlay:
+        _print_value_tickets(ledger, bets, args, config)
     if args.output:
         write_rows([{"key": bet.key, **asdict(bet)} for bet in bets], args.output)
     database.close()
@@ -374,9 +413,13 @@ def run_bets_add(args: argparse.Namespace) -> int:
 
 def run_bets_update(args: argparse.Namespace) -> int:
     database = _open_database(args.database)
-    counts = Ledger(database).update()
+    ledger = Ledger(database)
+    counts = ledger.update()
+    ticket_counts = ledger.update_tickets()
     database.close()
     print(f"Closing prices attached to {counts['clv']} bets; {counts['settled']} bets settled.")
+    if ticket_counts["clv"] or ticket_counts["settled"]:
+        print(f"Parlays: CLV for {ticket_counts['clv']} tickets; {ticket_counts['settled']} tickets settled.")
     print(
         "Results arrive via `parlay fetch --to-season <current>`; "
         "closing prices via the same files or an odds sync."
@@ -388,8 +431,16 @@ def run_bets_report(args: argparse.Namespace) -> int:
     database = _open_database(args.database)
     report = Ledger(database).report(kind=args.kind)
     database.close()
+    parlays = report["parlays"]
+    if parlays["tickets"]:
+        print(
+            f"Parlays {parlays['tickets']} ({parlays['open']} open, {parlays['won']} won) · "
+            f"staked {parlays['staked']:.2f} · profit {parlays['profit']:+.2f} · "
+            f"yield {parlays['yield']:+.2%} ± {parlays['yield_se']:.2%} · "
+            f"CLV {parlays['mean_clv']:+.2%} ± {parlays['clv_se']:.2%} (n={parlays['clv_n']})\n"
+        )
     if not report["bets"]:
-        print("No bets recorded yet.")
+        print("No single bets recorded yet.")
         return 0
     print(
         f"Bets {report['bets']} ({report['open']} open) · staked {report['staked']:.2f} · "
@@ -415,10 +466,24 @@ def run_bets_report(args: argparse.Namespace) -> int:
 
 def run_bets_list(args: argparse.Namespace) -> int:
     database = _open_database(args.database)
-    rows = Ledger(database).bets(kind=args.kind, open_only=args.open)
+    ledger = Ledger(database)
+    rows = ledger.bets(kind=args.kind, open_only=args.open)
+    tickets = ledger.tickets(kind=args.kind, open_only=args.open)
     database.close()
+    for t in tickets:
+        clv = f"{t['clv']:+.1%}" if t["clv"] is not None else "-"
+        pnl = f"{t['pnl']:+.2f}" if t["pnl"] is not None else "-"
+        print(
+            f"Parlay #{t['ticket_id']} {t['kind']} {t['bookmaker']} @ {t['odds']:.2f} stake {t['stake']:.2f} "
+            f"CLV {clv} · {t['result'] or 'open'} {pnl}"
+        )
+        for leg in t["leg_rows"]:
+            pick = describe_pick(leg["home_team"], leg["away_team"], leg["market"], leg["selection"])
+            print(f"   {leg['leg_no']}. {pick} @ {leg['odds']:.2f} · {leg['result'] or 'open'}")
+    if tickets:
+        print()
     if not rows:
-        print("No bets.")
+        print("No single bets.")
         return 0
     print(
         table(
@@ -488,10 +553,10 @@ def run_backtest_value(args: argparse.Namespace) -> int:
         ],
         args.output_dir / "bets.csv",
     )
-    write_json(
-        {"metrics": m, "breakdown": result.breakdown, "config": asdict(config)},
-        args.output_dir / "metrics.json",
-    )
+    report: dict[str, object] = {"metrics": m, "breakdown": result.breakdown, "config": asdict(config)}
+    if args.parlay:
+        report["parlays"] = _parlay_backtest_report(result, args, config)
+    write_json(report, args.output_dir / "metrics.json")
     print(f"Artifacts written to {args.output_dir}/")
     if config.reference != "pinnacle":
         print(LOW_CONFIDENCE.format(ref=config.reference))
@@ -700,3 +765,194 @@ def run_watch(args: argparse.Namespace) -> int:
     finally:
         database.close()
     return 0
+
+
+SELECTION_ALIASES = {"1": "home", "x": "draw", "2": "away", "o": "over", "u": "under"}
+
+
+def _find_match(text: str, matches: list):
+    from parlay.data.teams import canonical_team_name
+
+    for match in matches:
+        if match.match_id == text:
+            return match
+    if " vs " not in text.lower():
+        raise SystemExit(f"cannot read match {text!r}; write it as 'Home vs Away'")
+    index = text.lower().index(" vs ")
+    home = canonical_team_name(text[:index]).casefold()
+    away = canonical_team_name(text[index + 4 :]).casefold()
+    found = [m for m in matches if m.home_team.casefold() == home and m.away_team.casefold() == away]
+    if not found:
+        raise SystemExit(f"no upcoming match {text!r} with stored prices; run `parlay odds sync` first")
+    return min(found, key=lambda m: m.date)
+
+
+def _ticket_rows(ticket) -> list[list[str]]:
+    rows = []
+    for number, leg in enumerate(ticket.legs, start=1):
+        fair = f"{1 / leg.fair_probability:.2f}" if leg.fair_probability else "-"
+        ev = f"{leg.expected_value:+.1%}" if leg.expected_value is not None else "-"
+        kickoff = f"{leg.kickoff_at:%a %H:%M}" if leg.kickoff_at else leg.match_date.isoformat()
+        rows.append([str(number), kickoff, leg.description, f"{leg.odds:.2f}", fair, ev])
+    return rows
+
+
+def _print_ticket(ticket, *, bankroll: float, kelly_fraction: float, max_stake: float) -> float:
+    print(table(["#", "kickoff", "leg", "odds", "fair", "EV"], _ticket_rows(ticket), "lllrrr"))
+    p = ticket.win_probability
+    stake = ticket.stake_fraction(kelly_fraction=kelly_fraction, max_stake=max_stake)
+    boost = f" (incl. {ticket.boost:+.0%} boost)" if ticket.boost else ""
+    print(f"\nTicket at {ticket.bookmaker}: {len(ticket.legs)} legs · odds {ticket.combined_odds:.2f}{boost}")
+    if p is None:
+        print("Fair probability unknown (a leg has no reference price): EV cannot be computed.")
+    else:
+        print(
+            f"Fair odds {1 / p:.2f} · win probability {p:.1%} · EV {ticket.expected_value:+.1%} · "
+            f"Kelly stake {stake:.2%} of bankroll ≈ {stake * bankroll:.2f}"
+        )
+    for warning in ticket.warnings:
+        print(f"  ! {warning}")
+    if p is not None and (ticket.expected_value or 0) <= 0:
+        print("Verdict: negative expected value — the bookmaker margin compounds with every leg. Do not bet.")
+    elif p is not None:
+        print("Verdict: positive expected value, but the ticket loses most of the time; keep stakes small.")
+    return stake
+
+
+def run_ticket(args: argparse.Namespace) -> int:
+    from parlay.betting.tickets import build_ticket, favourite_leg, price_leg
+
+    database = _open_database(args.database)
+    ledger = Ledger(database)
+    now = args.as_of or datetime.now(timezone.utc)
+    upcoming = [
+        m
+        for m in database.load_matches()
+        if m.home_goals is None and (m.kickoff_at is None or m.kickoff_at > now)
+    ]
+    legs = []
+    try:
+        for key in args.keys:
+            data = ledger.candidate(key)
+            match = next((m for m in upcoming if m.match_id == data["match_id"]), None)
+            if match is None:
+                raise SystemExit(f"{key}: the match has started or is unknown")
+            legs.append(
+                price_leg(
+                    match,
+                    data["market"],
+                    data["selection"],
+                    database.load_odds(match_id=match.match_id),
+                    bookmaker=args.book,
+                    as_of=now,
+                    reference=args.reference,
+                    leg_odds=float(data["odds"]) if data["bookmaker"] == args.book else None,
+                )
+            )
+        for spec in args.leg:
+            body, _, price = spec.partition("@")
+            parts = body.rsplit(":", 2)
+            if len(parts) != 3:
+                raise SystemExit(f"cannot read leg {spec!r}; expected 'Home vs Away:MARKET:SELECTION'")
+            match = _find_match(parts[0].strip(), upcoming)
+            selection = SELECTION_ALIASES.get(parts[2].strip().lower(), parts[2].strip().lower())
+            legs.append(
+                price_leg(
+                    match,
+                    parts[1].strip().lower(),
+                    selection,
+                    database.load_odds(match_id=match.match_id),
+                    bookmaker=args.book,
+                    as_of=now,
+                    reference=args.reference,
+                    leg_odds=float(price) if price else None,
+                )
+            )
+        if args.favourites:
+            horizon = now + timedelta(days=args.days)
+            taken = {leg.match_id for leg in legs}
+            for match in sorted(upcoming, key=lambda m: (m.kickoff_at or now, m.match_id)):
+                if len(legs) >= args.max_legs:
+                    break
+                if match.match_id in taken or (match.kickoff_at and match.kickoff_at > horizon):
+                    continue
+                try:
+                    legs.append(
+                        favourite_leg(
+                            match,
+                            database.load_odds(match_id=match.match_id),
+                            bookmaker=args.book,
+                            as_of=now,
+                            reference=args.reference,
+                        )
+                    )
+                except ValueError:
+                    continue
+        ticket = build_ticket(legs, args.book, boost=args.boost, ticket_odds=args.ticket_odds)
+    except (ValueError, KeyError) as exc:
+        database.close()
+        raise SystemExit(str(exc)) from exc
+    stake = _print_ticket(
+        ticket, bankroll=args.bankroll, kelly_fraction=args.kelly_fraction, max_stake=args.max_stake
+    )
+    if args.record:
+        amount = args.stake or max(stake * args.bankroll, 0.01)
+        ticket_id = ledger.record_ticket(ticket, kind=args.record, stake=amount)
+        print(
+            f"\nRecorded {args.record} parlay #{ticket_id}."
+            if ticket_id
+            else "\nThis ticket is already open."
+        )
+    database.close()
+    return 0
+
+
+def _print_value_tickets(
+    ledger: Ledger, bets: list[ValueBet], args: argparse.Namespace, config: ValueConfig
+) -> None:
+    from parlay.betting.tickets import value_tickets
+
+    tickets = value_tickets(bets, max_legs=args.max_legs)
+    print("\n=== Mix parlays from value bets (one leg per match, one bookmaker per ticket) ===")
+    if not tickets:
+        print("Fewer than two value bets on different matches at one bookmaker: no ticket.")
+        return
+    for ticket in tickets:
+        print()
+        stake = _print_ticket(
+            ticket, bankroll=args.bankroll, kelly_fraction=config.kelly_fraction, max_stake=config.max_stake
+        )
+        print(f"Ticket key {ticket.key}")
+        if args.paper:
+            recorded = ledger.record_ticket(ticket, kind="paper", stake=max(stake * args.bankroll, 0.01))
+            if recorded:
+                print(f"Recorded paper parlay #{recorded}.")
+
+
+def _parlay_backtest_report(result, args: argparse.Namespace, config: ValueConfig) -> dict[str, float]:
+    from parlay.betting.backtest import run_parlay_backtest
+
+    parlays = run_parlay_backtest(
+        result, max_legs=args.max_legs, kelly_fraction=config.kelly_fraction, max_stake=config.max_stake
+    )
+    pm = parlays.metrics
+    if not pm["tickets"]:
+        print("No day had two value bets on different matches at one bookmaker: no parlay tickets.\n")
+        return pm
+    print(
+        f"Mix parlays (up to {args.max_legs} legs, one ticket per day and bookmaker): "
+        f"{pm['tickets']:.0f} tickets, {pm['mean_legs']:.1f} legs, odds {pm['mean_odds']:.1f}, "
+        f"win probability {pm['mean_win_probability']:.1%}"
+    )
+    print(
+        f"  expected EV {pm['mean_expected_value']:+.1%} · realized {pm['yield']:+.1%} "
+        f"± {pm['yield_se']:.1%} · hit rate {pm['hit_rate']:.0%} · "
+        f"longest losing streak {pm['longest_losing_streak']:.0f}"
+    )
+    print(
+        f"  CLV {pm['mean_clv']:+.1%} ± {pm['clv_se']:.1%} · Kelly bankroll multiple "
+        f"{pm['kelly_bankroll_multiple']:.3f} · same legs as singles {pm['singles_yield']:+.1%} "
+        f"± {pm['singles_yield_se']:.1%}\n"
+    )
+    write_rows(parlays.tickets, args.output_dir / "parlays.csv")
+    return pm

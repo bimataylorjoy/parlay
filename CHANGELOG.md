@@ -11,6 +11,10 @@
 - Free odds feeds: football-data `fixtures.csv` and The Odds API (Pinnacle in
   region `eu`). CLI: `odds sync`, `value`, `bets add|update|report|list`,
   `backtest-value`.
+- Mix parlays: `parlay ticket` (accumulator EV against Pinnacle, boosts,
+  per-leg warnings, shrunk Kelly), `value --parlay` (tickets from value bets
+  only), parlay tickets in the ledger (leg-by-leg settlement incl. half
+  win/loss, ticket CLV) and `backtest-value --parlay`.
 - `parlay watch`: lineup-window re-pricing of each kickoff slot (The Odds API
   synced only for the competitions in the slot, once per slot, with a credit
   reserve), paper logging and optional Telegram notifications.

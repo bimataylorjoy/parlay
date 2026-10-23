@@ -21,6 +21,7 @@ from parlay.data.schemas import Match, OddsSnapshot
 
 from .reference import fair_price
 from .settlement import selections_for, settle
+from .tickets import Ticket
 from .value import ValueBet
 
 SCHEMA = """
@@ -59,6 +60,42 @@ CREATE TABLE IF NOT EXISTS bets (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_bets_candidate
     ON bets(kind, candidate_key) WHERE candidate_key IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_bets_match ON bets(match_id);
+CREATE TABLE IF NOT EXISTS tickets (
+    ticket_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL CHECK (kind IN ('paper', 'real')),
+    placed_at TEXT NOT NULL,
+    bookmaker TEXT NOT NULL,
+    odds REAL NOT NULL,
+    stake REAL NOT NULL,
+    boost REAL NOT NULL DEFAULT 0,
+    fair_probability REAL,
+    expected_value REAL,
+    ticket_key TEXT,
+    legs INTEGER NOT NULL,
+    closing_probability REAL,
+    clv REAL,
+    result TEXT,
+    pnl REAL,
+    settled_at TEXT
+);
+CREATE TABLE IF NOT EXISTS ticket_legs (
+    ticket_id INTEGER NOT NULL REFERENCES tickets(ticket_id),
+    leg_no INTEGER NOT NULL,
+    match_id TEXT NOT NULL,
+    competition TEXT,
+    match_date TEXT,
+    kickoff_at TEXT,
+    home_team TEXT,
+    away_team TEXT,
+    market TEXT NOT NULL,
+    selection TEXT NOT NULL,
+    odds REAL NOT NULL,
+    fair_probability REAL,
+    closing_probability REAL,
+    closing_source TEXT,
+    result TEXT,
+    PRIMARY KEY (ticket_id, leg_no)
+);
 """
 
 STOP_MIN_BETS = 50
@@ -275,27 +312,180 @@ class Ledger:
         return counts
 
     def report(self, *, kind: str | None = None) -> dict[str, Any]:
-        return summarize_bets(self.bets(kind=kind))
+        report = summarize_bets(self.bets(kind=kind))
+        report["parlays"] = summarize_tickets(self.tickets(kind=kind))
+        return report
+
+    # -- parlay tickets -----------------------------------------------------
+    def record_ticket(
+        self, ticket: Ticket, *, kind: str, stake: float, odds: float | None = None
+    ) -> int | None:
+        """Store a ticket and its legs; ``None`` if an identical open ticket of this kind exists."""
+        if kind not in ("paper", "real") or stake <= 0:
+            raise ValueError("kind must be 'paper' or 'real' and stake positive")
+        taken = odds or ticket.combined_odds
+        if kind == "paper" and self.has_open_ticket(kind, ticket.key):
+            return None
+        p = ticket.win_probability
+        cursor = self.db.connection.execute(
+            """INSERT INTO tickets (kind, placed_at, bookmaker, odds, stake, boost, fair_probability,
+                expected_value, ticket_key, legs) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                kind,
+                _now(),
+                ticket.bookmaker,
+                taken,
+                stake,
+                ticket.boost,
+                p,
+                taken * p - 1.0 if p is not None else None,
+                ticket.key,
+                len(ticket.legs),
+            ),
+        )
+        ticket_id = cursor.lastrowid
+        self.db.connection.executemany(
+            """INSERT INTO ticket_legs (ticket_id, leg_no, match_id, competition, match_date, kickoff_at,
+                home_team, away_team, market, selection, odds, fair_probability)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            [
+                (
+                    ticket_id,
+                    number,
+                    leg.match_id,
+                    leg.competition,
+                    leg.match_date.isoformat(),
+                    leg.kickoff_at.isoformat() if leg.kickoff_at else None,
+                    leg.home_team,
+                    leg.away_team,
+                    leg.market,
+                    leg.selection,
+                    leg.odds,
+                    leg.fair_probability,
+                )
+                for number, leg in enumerate(ticket.legs, start=1)
+            ],
+        )
+        self.db.connection.commit()
+        return ticket_id
+
+    def has_open_ticket(self, kind: str, key: str) -> bool:
+        row = self.db.connection.execute(
+            "SELECT 1 FROM tickets WHERE kind = ? AND ticket_key = ? AND result IS NULL", (kind, key)
+        ).fetchone()
+        return row is not None
+
+    def tickets(self, *, kind: str | None = None, open_only: bool = False) -> list[dict[str, Any]]:
+        query, params = "SELECT * FROM tickets", []
+        clauses = []
+        if kind:
+            clauses.append("kind = ?")
+            params.append(kind)
+        if open_only:
+            clauses.append("result IS NULL")
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        rows = [dict(r) for r in self.db.connection.execute(query + " ORDER BY placed_at, ticket_id", params)]
+        for row in rows:
+            row["leg_rows"] = [
+                dict(r)
+                for r in self.db.connection.execute(
+                    "SELECT * FROM ticket_legs WHERE ticket_id = ? ORDER BY leg_no", (row["ticket_id"],)
+                )
+            ]
+        return rows
+
+    def update_tickets(self, *, method: str = "shin") -> dict[str, int]:
+        """Closing prices per leg, ticket CLV once every leg has one, settlement once every leg is final."""
+        matches = {m.match_id: m for m in self.db.load_matches()}
+        counts = {"clv": 0, "settled": 0}
+        for ticket in self.tickets():
+            if ticket["clv"] is not None and ticket["result"] is not None:
+                continue
+            legs = ticket["leg_rows"]
+            for leg in legs:
+                match = matches.get(leg["match_id"])
+                if leg["closing_probability"] is None:
+                    closing = closing_probability(
+                        self.db.load_odds(match_id=leg["match_id"]),
+                        leg["market"],
+                        leg["selection"],
+                        ticket["placed_at"],
+                        match,
+                        method=method,
+                    )
+                    if closing is not None:
+                        leg["closing_probability"], leg["closing_source"] = closing
+                if (
+                    leg["result"] is None
+                    and match
+                    and match.home_goals is not None
+                    and match.away_goals is not None
+                ):
+                    leg["result"] = settle(
+                        leg["market"], leg["selection"], match.home_goals, match.away_goals
+                    ).label
+                self.db.connection.execute(
+                    """UPDATE ticket_legs SET closing_probability = ?, closing_source = ?, result = ?
+                    WHERE ticket_id = ? AND leg_no = ?""",
+                    (
+                        leg["closing_probability"],
+                        leg["closing_source"],
+                        leg["result"],
+                        ticket["ticket_id"],
+                        leg["leg_no"],
+                    ),
+                )
+            updates: dict[str, Any] = {}
+            if ticket["clv"] is None and all(leg["closing_probability"] is not None for leg in legs):
+                p_close = math.prod(leg["closing_probability"] for leg in legs)
+                updates.update(closing_probability=p_close, clv=ticket["odds"] * p_close - 1.0)
+                counts["clv"] += 1
+            if ticket["result"] is None and all(leg["result"] is not None for leg in legs):
+                result, pnl = settle_ticket(ticket["odds"], ticket["stake"], legs)
+                updates.update(result=result, pnl=pnl, settled_at=_now())
+                counts["settled"] += 1
+            if updates:
+                assignments = ", ".join(f"{column} = ?" for column in updates)
+                self.db.connection.execute(
+                    f"UPDATE tickets SET {assignments} WHERE ticket_id = ?",
+                    (*updates.values(), ticket["ticket_id"]),
+                )
+        self.db.connection.commit()
+        return counts
 
 
 def closing_fair_probability(
     odds: list[OddsSnapshot], bet: BetRow, match: Match | None, *, method: str = "shin"
 ) -> tuple[float, str] | None:
-    """Fair closing probability of the bet's selection.
+    """Fair closing probability of a recorded bet's selection."""
+    return closing_probability(odds, bet.market, bet.selection, bet.placed_at, match, method=method)
+
+
+def closing_probability(
+    odds: list[OddsSnapshot],
+    market: str,
+    selection: str,
+    placed_at: str,
+    match: Match | None,
+    *,
+    method: str = "shin",
+) -> tuple[float, str] | None:
+    """Fair closing probability of one selection.
 
     Uses closing snapshots (Pinnacle → Betfair Exchange → consensus). Without
     closing data, the latest pre-kickoff snapshot captured after the bet is a
     proxy (labelled ``*-latest``), but only once kickoff has passed.
     """
-    selections = selections_for(bet.market)
-    rows = [o for o in odds if o.market == bet.market]
+    selections = selections_for(market)
+    rows = [o for o in odds if o.market == market]
     closing = [o for o in rows if o.is_closing]
     label = ""
     if not closing:
         kickoff = match.kickoff_at if match else None
         if kickoff is None or kickoff > datetime.now(timezone.utc):
             return None
-        placed = datetime.fromisoformat(bet.placed_at)
+        placed = datetime.fromisoformat(placed_at)
         closing = [o for o in rows if placed <= o.captured_at <= kickoff]
         label = "-latest"
     if not closing:
@@ -310,7 +500,56 @@ def closing_fair_probability(
     fair = fair_price(quotes, selections, "auto", method=method)
     if fair is None:
         return None
-    return fair.probabilities[bet.selection], fair.source + label
+    return fair.probabilities[selection], fair.source + label
+
+
+LEG_RETURN: dict[str, float | None] = {"win": None, "push": 1.0, "loss": 0.0, "half_loss": 0.5}
+
+
+def settle_ticket(ticket_odds: float, stake: float, legs: list[dict[str, Any]]) -> tuple[str, float]:
+    """Accumulator settlement: each leg returns odds (win), 1 (push), (1 + odds)/2 (half win),
+    0.5 (half loss) or 0 (loss); the payout scales the ticket price by the product of returns
+    relative to the product of leg odds (so boosts and quoted ticket prices carry through)."""
+    product_odds = math.prod(leg["odds"] for leg in legs)
+    returns = []
+    for leg in legs:
+        result, odds = leg["result"], leg["odds"]
+        if result == "win":
+            returns.append(odds)
+        elif result == "half_win":
+            returns.append((1.0 + odds) / 2.0)
+        else:
+            returns.append(LEG_RETURN[result] or 0.0)
+    multiple = math.prod(returns)
+    payout = stake * multiple * ticket_odds / product_odds
+    if multiple == 0:
+        label = "loss"
+    elif all(leg["result"] == "push" for leg in legs):
+        label = "void"
+    else:
+        label = "win"
+    return label, payout - stake
+
+
+def summarize_tickets(tickets: list[dict[str, Any]]) -> dict[str, Any]:
+    settled = [t for t in tickets if t["result"] is not None]
+    staked = sum(t["stake"] for t in settled)
+    profit = sum(t["pnl"] or 0.0 for t in settled)
+    clv_mean, clv_se = _mean_se([t["clv"] for t in tickets if t["clv"] is not None])
+    _, yield_se = _mean_se([(t["pnl"] or 0.0) / t["stake"] for t in settled])
+    return {
+        "tickets": len(tickets),
+        "open": len(tickets) - len(settled),
+        "settled": len(settled),
+        "won": sum(1 for t in settled if t["result"] == "win"),
+        "staked": staked,
+        "profit": profit,
+        "yield": profit / staked if staked else 0.0,
+        "yield_se": yield_se,
+        "clv_n": sum(1 for t in tickets if t["clv"] is not None),
+        "mean_clv": clv_mean,
+        "clv_se": clv_se,
+    }
 
 
 def _mean_se(values: list[float]) -> tuple[float, float]:
