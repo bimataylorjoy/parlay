@@ -13,6 +13,14 @@ from parlay.models.team_strength import clear_fit_cache
 
 
 @pytest.fixture(autouse=True)
+def _isolated_secrets(monkeypatch, tmp_path):
+    """Never read the user's real env file (API keys, bot token) during tests."""
+    monkeypatch.setenv("PARLAY_ENV_FILE", str(tmp_path / "no-env-file"))
+    for key in ("THE_ODDS_API_KEY", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "PARLAY_BOOKS"):
+        monkeypatch.delenv(key, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _fresh_fit_cache():
     clear_fit_cache()
     yield

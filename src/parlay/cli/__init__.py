@@ -6,7 +6,8 @@ import argparse
 import logging
 
 from parlay import __version__
-from parlay.cli.commands import betting, data, evaluate, predict, sportmonks
+from parlay.cli.commands import betting, data, evaluate, predict, sportmonks, telegram
+from parlay.config import load_env_file
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -21,11 +22,13 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate.register(commands)
     predict.register(commands)
     betting.register(commands)
+    telegram.register(commands)
     sportmonks.register(commands)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
+    load_env_file()
     args = build_parser().parse_args(argv)
     logging.basicConfig(
         level=logging.WARNING if args.verbose else logging.ERROR, format="%(levelname)s: %(message)s"

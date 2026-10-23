@@ -104,14 +104,18 @@ parlay watch --once                  # process due slots and exit — for cron e
 
 A typical weekend of EPL + Championship is 6–10 slots, 2–4 credits each.
 
-**Telegram notifications (optional, free).** Create a bot with @BotFather,
-send it a message, read your chat id from
-`https://api.telegram.org/bot<TOKEN>/getUpdates`, then:
+**Telegram bot (free).** Create a bot with @BotFather and put its token in
+`~/.config/parlay/env` (the CLI loads this file automatically; keep it
+`chmod 600` and out of git). Send `/start` to the bot, then:
 
 ```bash
-export TELEGRAM_BOT_TOKEN=123456:ABC...
-export TELEGRAM_CHAT_ID=123456789
+parlay telegram --setup      # detects your chat id, saves it, sends a welcome message
+parlay telegram              # bot + lineup-window watcher in one process
 ```
+
+The bot answers only your chat id: `/value`, `/parlay`, `/ticket`,
+`/bet KEY STAKE [ODDS]`, `/paper`, `/open`, `/report`, `/next`, `/sync`,
+`/credits`; watcher slot alerts arrive as messages.
 
 **Cron** (keeps running after reboots; keep secrets out of the repository):
 

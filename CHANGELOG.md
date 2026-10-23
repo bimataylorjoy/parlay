@@ -11,6 +11,12 @@
 - Free odds feeds: football-data `fixtures.csv` and The Odds API (Pinnacle in
   region `eu`). CLI: `odds sync`, `value`, `bets add|update|report|list`,
   `backtest-value`.
+- `parlay telegram`: long-polling bot restricted to your chat id, with value
+  bets, parlay tickets, bet recording, open bets, report, slot preview, sync
+  and credits; runs the lineup-window watcher with Telegram alerts.
+  `--setup` detects and saves the chat id.
+- Secrets are read from `~/.config/parlay/env` (or `$PARLAY_ENV_FILE`)
+  without overriding variables already set; tests never read it.
 - Mix parlays: `parlay ticket` (accumulator EV against Pinnacle, boosts,
   per-leg warnings, shrunk Kelly), `value --parlay` (tickets from value bets
   only), parlay tickets in the ledger (leg-by-leg settlement incl. half
