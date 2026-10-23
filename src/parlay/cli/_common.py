@@ -10,7 +10,13 @@ from parlay.data.database import ResearchDatabase
 from parlay.data.loaders import load_many
 from parlay.data.schemas import Match, OddsSnapshot
 from parlay.data.sources import acquire_csv
-from parlay.models.team_strength import DEFAULT_HALF_LIFE_DAYS, DEFAULT_L2_REG, ESTIMATORS, GOAL_MODELS
+from parlay.models.team_strength import (
+    DEFAULT_HALF_LIFE_DAYS,
+    DEFAULT_L2_REG,
+    DEFAULT_SOT_BLEND,
+    ESTIMATORS,
+    GOAL_MODELS,
+)
 
 DEFAULT_DATABASE = "data/parlay.sqlite"
 DEFAULT_SNAPSHOT_DIR = "data/raw/snapshots"
@@ -57,6 +63,12 @@ def add_model_options(parser: argparse.ArgumentParser, *, model: bool = True) ->
         type=float,
         default=DEFAULT_L2_REG,
         help=f"precision of the N(0, 1/l2) prior on team strengths (default: {DEFAULT_L2_REG:g})",
+    )
+    group.add_argument(
+        "--sot-blend",
+        type=float,
+        default=DEFAULT_SOT_BLEND,
+        help=f"weight of shots-on-target strengths, 0 = goals only (default: {DEFAULT_SOT_BLEND:g})",
     )
 
 

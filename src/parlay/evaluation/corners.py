@@ -8,7 +8,12 @@ from parlay.data.schemas import Match
 from parlay.evaluation.backtest import forecast_timestamp
 from parlay.evaluation.market import evaluate_binary_market
 from parlay.evaluation.temporal import expanding_window
-from parlay.models.corners import DEFAULT_MAX_CORNERS, fit_corner_strength
+from parlay.models.corners import (
+    DEFAULT_CORNER_HALF_LIFE_DAYS,
+    DEFAULT_CORNER_L2_REG,
+    DEFAULT_MAX_CORNERS,
+    fit_corner_strength,
+)
 from parlay.prediction.markets import totals_probabilities
 
 
@@ -62,8 +67,8 @@ def run_corners_backtest(
     initial_train_days: int = 730,
     test_days: int = 7,
     step_days: int | None = None,
-    half_life_days: float | None = 365.0,
-    l2_reg: float = 5.0,
+    half_life_days: float | None = DEFAULT_CORNER_HALF_LIFE_DAYS,
+    l2_reg: float = DEFAULT_CORNER_L2_REG,
     dispersion: float | None = None,
     max_corners: int = DEFAULT_MAX_CORNERS,
     evaluation_mode: str = "rolling_origin",

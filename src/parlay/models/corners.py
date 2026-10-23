@@ -23,6 +23,11 @@ from .team_strength import time_decay_weights
 POISSON_DISPERSION_THRESHOLD = 500.0
 DEFAULT_MAX_CORNERS = 25
 NEUTRAL_LOG_RATE = math.log(5.0)
+# Corner counts carry little team signal relative to their noise; walk-forward
+# tuning on EPL + Championship 2020-2024 selects much stronger shrinkage than
+# for goals (with l2 = 2.5 the model is worse than a constant base rate).
+DEFAULT_CORNER_L2_REG = 150.0
+DEFAULT_CORNER_HALF_LIFE_DAYS = 270.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,8 +70,8 @@ def fit_corner_strength(
     matches: list[Match],
     *,
     as_of: date | None = None,
-    half_life_days: float | None = 365.0,
-    l2_reg: float = 5.0,
+    half_life_days: float | None = DEFAULT_CORNER_HALF_LIFE_DAYS,
+    l2_reg: float = DEFAULT_CORNER_L2_REG,
     dispersion: float | None = None,
     max_corners: int = DEFAULT_MAX_CORNERS,
 ) -> CornerStrengthModel:

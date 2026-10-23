@@ -122,6 +122,7 @@ def run_predict_sportmonks(args: argparse.Namespace) -> int:
         estimator=args.estimator,
         half_life_days=args.half_life_days,
         l2_reg=args.l2_reg,
+        sot_blend=args.sot_blend,
         config=config,
         corners=False,
     )

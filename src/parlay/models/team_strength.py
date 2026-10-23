@@ -32,7 +32,8 @@ ESTIMATORS: tuple[str, ...] = ("mle", "bayesian_hmc")
 # (see README "Benchmarks"). ``l2_reg`` is the precision of a N(0, 1/l2) prior
 # on each attack/defence parameter.
 DEFAULT_HALF_LIFE_DAYS = 365.0
-DEFAULT_L2_REG = 5.0
+DEFAULT_L2_REG = 2.5
+DEFAULT_SOT_BLEND = 0.5
 
 _CACHE_SIZE = 128
 _FIT_CACHE: OrderedDict[str, TeamStrengthModel] = OrderedDict()
@@ -101,9 +102,46 @@ def _cache_key(rows: list[Match], **config: object) -> str:
     for row in rows:
         digest.update(
             f"{row.match_id}|{row.date}|{row.home_team}|{row.away_team}|{row.home_goals}|{row.away_goals}|"
-            f"{int(row.neutral)}\n".encode()
+            f"{int(row.neutral)}|{row.home_sot}|{row.away_sot}\n".encode()
         )
     return digest.hexdigest()
+
+
+def _blend_shots_on_target(
+    rows: list[Match],
+    index: dict[str, int],
+    attack: np.ndarray,
+    defense: np.ndarray,
+    weights: np.ndarray,
+    venue: np.ndarray,
+    l2_reg: float,
+    blend: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Blend goal-based strengths with strengths estimated from shots on target."""
+    from .mle import fit_rate_model
+
+    keep = [i for i, row in enumerate(rows) if row.home_sot is not None and row.away_sot is not None]
+    if len(keep) < 2:
+        return attack, defense
+    covered = np.zeros(len(index), dtype=bool)
+    home = np.array([index[rows[i].home_team] for i in keep])
+    away = np.array([index[rows[i].away_team] for i in keep])
+    covered[home] = covered[away] = True
+    if covered.sum() < 2:
+        return attack, defense
+    fit = fit_rate_model(
+        home,
+        away,
+        np.array([rows[i].home_sot for i in keep], dtype=float),
+        np.array([rows[i].away_sot for i in keep], dtype=float),
+        weights[keep],
+        len(index),
+        l2_reg=l2_reg,
+        venue=venue[keep],
+    )
+    # Teams absent from the SOT data are pinned to 0 by the prior; keep their goal estimate.
+    weight = np.where(covered, blend, 0.0)
+    return (1 - weight) * attack + weight * fit.attack, (1 - weight) * defense + weight * fit.defense
 
 
 def clear_fit_cache() -> None:
@@ -121,6 +159,7 @@ def fit_team_strength(
     rho: float | None = None,
     dispersion: float | None = None,
     max_goals: int | None = None,
+    sot_blend: float = DEFAULT_SOT_BLEND,
     use_cache: bool = True,
 ) -> TeamStrengthModel:
     """Fit relative attack/defence strengths from completed matches.
@@ -138,6 +177,13 @@ def fit_team_strength(
     rho : fix the Dixon-Coles ``rho`` instead of estimating it jointly.
     dispersion : fix the NB2 dispersion instead of estimating it jointly.
     max_goals : score-grid size; ``None`` sizes the grid adaptively.
+    sot_blend : weight in ``[0, 1]`` of shots-on-target strengths. Attack and
+        defence are also estimated from shots on target (same likelihood
+        engine, Poisson), and each team parameter becomes
+        ``(1 - w) * goals_estimate + w * sot_estimate``. Shots on target are
+        roughly four times as frequent as goals, so they carry a less noisy
+        signal of team quality. Teams without SOT data keep the goals
+        estimate. ``0`` uses goals only.
     """
     rows = validate_matches(matches)
     if model not in GOAL_MODELS:
@@ -150,6 +196,8 @@ def fit_team_strength(
         raise ValueError("dispersion must be positive")
     if l2_reg < 0:
         raise ValueError("l2_reg must be non-negative")
+    if not 0.0 <= sot_blend <= 1.0:
+        raise ValueError("sot_blend must be between 0 and 1")
     if not rows:
         raise ValueError("at least one match is required")
     if estimator == "bayesian_hmc" and model == "negative_binomial":
@@ -168,6 +216,7 @@ def fit_team_strength(
             rho=rho,
             dispersion=dispersion,
             max_goals=max_goals,
+            sot_blend=sot_blend,
         )
         cached = _FIT_CACHE.get(key)
         if cached is not None:
@@ -232,6 +281,11 @@ def fit_team_strength(
                 eta_h = np.clip(intercept + home_advantage * venue + attack[home] - defense[away], -3, 3)
                 eta_a = np.clip(intercept + attack[away] - defense[home], -3, 3)
                 fitted_rho = estimate_rho(home_goals, away_goals, np.exp(eta_h), np.exp(eta_a), weights)
+
+    if sot_blend > 0:
+        attack, defense = _blend_shots_on_target(
+            rows, index, np.asarray(attack), np.asarray(defense), weights, venue, l2_reg, sot_blend
+        )
 
     counts = np.bincount(home, minlength=len(teams)) + np.bincount(away, minlength=len(teams))
     effective = np.bincount(home, weights, len(teams)) + np.bincount(away, weights, len(teams))

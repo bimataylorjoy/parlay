@@ -15,7 +15,7 @@ from parlay.data.schemas import Match
 from parlay.data.teams import canonical_team_name
 from parlay.evaluation.serialization import write_rows
 from parlay.models.corners import CornerStrengthModel, fit_corner_strength
-from parlay.models.team_strength import TeamStrengthModel, fit_team_strength
+from parlay.models.team_strength import DEFAULT_SOT_BLEND, TeamStrengthModel, fit_team_strength
 from parlay.prediction.fixture import (
     Fixture,
     FixturePrediction,
@@ -105,6 +105,7 @@ def predict_fixtures(
     half_life_days: float | None,
     l2_reg: float,
     config: PredictConfig,
+    sot_blend: float = DEFAULT_SOT_BLEND,
     corners: bool = True,
 ) -> list[FixturePrediction]:
     """Fit once per fixture date on strictly earlier matches, then predict each fixture."""
@@ -123,15 +124,12 @@ def predict_fixtures(
                     as_of=day,
                     half_life_days=half_life_days,
                     l2_reg=l2_reg,
+                    sot_blend=sot_blend,
                 )
                 if training
                 else None
             )
-            corner_models[day] = (
-                fit_corner_strength(training, as_of=day, half_life_days=half_life_days, l2_reg=l2_reg)
-                if corners and training
-                else None
-            )
+            corner_models[day] = fit_corner_strength(training, as_of=day) if corners and training else None
         goal_model = goal_models[day]
         if goal_model is None:
             predictions.append(
@@ -163,6 +161,7 @@ def run_predict(args: argparse.Namespace) -> int:
         estimator=args.estimator,
         half_life_days=args.half_life_days,
         l2_reg=args.l2_reg,
+        sot_blend=args.sot_blend,
         config=config,
         corners=not args.no_corners,
     )

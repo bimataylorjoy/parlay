@@ -51,6 +51,7 @@ def _config(args: argparse.Namespace, **overrides: object) -> BacktestConfig:
         estimator=args.estimator,
         half_life_days=args.half_life_days,
         l2_reg=args.l2_reg,
+        sot_blend=args.sot_blend,
         initial_train_days=args.initial_train_days,
         test_days=args.test_days,
         step_days=args.step_days,

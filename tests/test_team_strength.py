@@ -3,7 +3,14 @@ from datetime import date
 import numpy as np
 import pytest
 
-from conftest import TRUE_ATTACK, TRUE_DEFENSE, TRUE_HOME_ADVANTAGE, make_match, simple_series
+from conftest import (
+    TRUE_ATTACK,
+    TRUE_DEFENSE,
+    TRUE_HOME_ADVANTAGE,
+    make_match,
+    simple_series,
+    synthetic_league,
+)
 from parlay.models.team_strength import GOAL_MODELS, fit_team_strength, time_decay_weights
 from parlay.prediction.api import PredictionResult, predict_with_uncertainty
 
@@ -104,3 +111,21 @@ def test_uncertainty_api_returns_probabilities_and_diagnostics(league):
     assert result.model_metadata["uncertainty_source"] == "none"
     assert set(result.totals) == {1.5, 2.5, 2.75, 3.5}
     assert result.to_dict()["uncertainty"]["decision"] in {"PASS", "WATCH", "RESEARCH_SIGNAL", "REJECT"}
+
+
+def test_sot_blend_mixes_shot_based_strengths():
+    from dataclasses import replace
+
+    rows = synthetic_league(rounds=4)
+    # Shots on target say Foxes are the best attack even though goals say otherwise.
+    rows = [
+        replace(m, home_sot=12 if m.home_team == "Foxes" else 3, away_sot=12 if m.away_team == "Foxes" else 3)
+        for m in rows
+    ]
+    goals_only = fit_team_strength(rows, sot_blend=0.0)
+    blended = fit_team_strength(rows, sot_blend=0.5)
+    assert blended.attack["Foxes"] > goals_only.attack["Foxes"]
+    without_sot = [replace(m, home_sot=None, away_sot=None) for m in rows]
+    assert fit_team_strength(without_sot, sot_blend=0.5).attack == pytest.approx(goals_only.attack)
+    with pytest.raises(ValueError, match="sot_blend"):
+        fit_team_strength(rows, sot_blend=1.5)

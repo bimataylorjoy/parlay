@@ -25,7 +25,12 @@ from parlay.evaluation.metrics import (
 )
 from parlay.evaluation.regime import analyze_by_regime, competition_regime, team_history_regime
 from parlay.evaluation.temporal import EVALUATION_MODES, expanding_window
-from parlay.models.team_strength import DEFAULT_HALF_LIFE_DAYS, DEFAULT_L2_REG, fit_team_strength
+from parlay.models.team_strength import (
+    DEFAULT_HALF_LIFE_DAYS,
+    DEFAULT_L2_REG,
+    DEFAULT_SOT_BLEND,
+    fit_team_strength,
+)
 from parlay.prediction.markets import (
     de_vig,
     expected_value,
@@ -45,6 +50,7 @@ class BacktestConfig:
     estimator: str = "mle"
     half_life_days: float | None = DEFAULT_HALF_LIFE_DAYS
     l2_reg: float = DEFAULT_L2_REG
+    sot_blend: float = DEFAULT_SOT_BLEND
     max_goals: int | None = None
     initial_train_days: int = 730
     test_days: int = 7
@@ -69,7 +75,10 @@ class BacktestConfig:
 
     @property
     def version(self) -> str:
-        return self.model_version or f"{self.model}_{self.estimator}_hl{self.half_life_days}_l2{self.l2_reg}"
+        return (
+            self.model_version
+            or f"{self.model}_{self.estimator}_hl{self.half_life_days}_l2{self.l2_reg}_sot{self.sot_blend}"
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -362,6 +371,7 @@ def run_backtest(
             as_of=fold.train_end,
             half_life_days=config.half_life_days,
             l2_reg=config.l2_reg,
+            sot_blend=config.sot_blend,
             max_goals=config.max_goals,
             use_cache=False,
         )
