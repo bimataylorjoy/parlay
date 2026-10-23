@@ -1,349 +1,300 @@
-# Time-Safe Football Probability Engine
+# Parlay — time-safe football probability research
 
 <p align="center">
-  <a href="https://github.com/bimataylorjoy/parlay/actions"><img src="https://img.shields.io/badge/tests-82%20passed-brightgreen" alt="tests"></a>
-  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-%3E%3D3.10-blue" alt="python"></a>
-  <a href="https://github.com/bimataylorjoy/parlay/blob/main/pyproject.toml"><img src="https://img.shields.io/badge/version-0.1.0-orange" alt="version"></a>
-  <a href="https://github.com/bimataylorjoy/parlay/blob/main/README.md"><img src="https://img.shields.io/badge/license-MIT-lightgrey" alt="license"></a>
-  <a href="https://github.com/bimataylorjoy/parlay"><img src="https://img.shields.io/badge/coverage-EPL%20%2B%20Championship-blueviolet" alt="coverage"></a>
+  <a href="https://github.com/bimataylorjoy/parlay/actions/workflows/ci.yml"><img src="https://github.com/bimataylorjoy/parlay/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <img src="https://img.shields.io/badge/python-%3E%3D3.10-blue" alt="python">
+  <img src="https://img.shields.io/badge/version-0.2.0-orange" alt="version">
+  <img src="https://img.shields.io/badge/license-MIT-lightgrey" alt="license">
 </p>
 
-<p align="center">
-  <strong>Anti leakage framework for football score probabilities from Poisson to Dixon Coles to Corners, with fair odds, Kelly and full backtesting.</strong><br/>
-  <em>Research only. Does not place bets or provide financial advice.</em>
-</p>
+Parlay fits attack/defence models to historical football results, turns them
+into a full score distribution for any fixture, prices every common market
+(1X2, totals and Asian handicaps including quarter lines, BTTS, correct score,
+corners) and evaluates everything with **walk-forward backtests that cannot see
+the future**.
+
+> Research software. It does not place bets, and its backtests show that the
+> betting market — especially the closing line — is still sharper than the
+> model. Treat model prices as a second opinion, not as an edge.
 
 ---
 
-## Table of Contents
+## Contents
 
-- [Why Parlay](#why-parlay)
-- [Features](#features)
-- [Architecture](#architecture)
+- [Highlights](#highlights)
+- [Benchmarks](#benchmarks)
 - [Installation](#installation)
-- [Quick Start](#quick-start)
-- [CLI Reference](#cli-reference)
-- [Markets & Maths](#markets--maths)
-- [Outputs](#outputs)
-- [Data Layout](#data-layout)
-- [Evaluation](#evaluation)
-- [Project Structure](#project-structure)
-- [Development & Testing](#development--testing)
-- [Contributors](#contributors)
-- [License](#license)
+- [Quick start](#quick-start)
+- [Fixture CSV format](#fixture-csv-format)
+- [CLI reference](#cli-reference)
+- [Python API](#python-api)
+- [Project layout](#project-layout)
+- [Development](#development)
+- [Upgrading from 0.1](#upgrading-from-01)
+- [Limitations](#limitations)
 
----
+## Highlights
 
-## Why Parlay
+- **One score matrix, every market.** Poisson, Dixon-Coles and Negative
+  Binomial goal models share one parameterization; markets are sums over
+  `P(home = i, away = j)`, so prices are mutually consistent.
+- **Fast, verified estimation.** Penalized MLE with analytic, vectorized
+  gradients (checked against finite differences in the test suite), time
+  decay, an L2 prior that shrinks thinly-observed teams, and a
+  shots-on-target blend that reduces noise in team ratings.
+- **Leakage-safe evaluation.** Results are only used once they were knowable;
+  prices must be captured before kickoff − 60 min; closing prices are used
+  only as a benchmark and for closing-line value (CLV).
+- **Honest scoring.** Log loss, Brier, RPS, Over 2.5 and BTTS log loss, all
+  compared with the de-vigged bookmaker and the Pinnacle closing line on the
+  same matches. Hyperparameters are tuned with an untouched holdout.
+- **Practical pricing.** Shin/power/multiplicative de-vig, push-aware EV and
+  Kelly, fair odds, quarter lines, Indonesian/Malay/HK/American odds input.
 
-Most public betting models leak future information, overfit to goals, and only support `Over 2.5`. Parlay is built for **sharpness over automation**:
+## Benchmarks
 
-* **Strict temporal correctness** — every feature, weight and odd is gated by `as_of < fixture_date`.
-* **Academic-grade models** — Independent Poisson, Dixon-Coles low-score correction, Negative-Binomial overdispersion, Bayesian HMC, plus a dedicated **CornerStrengthModel**.
-* **Full market coverage** — 1X2, Double Chance, BTTS, Win-to-Nil, **arbitrary & quarter O/U** (2.25/2.75 split-stake), Correct Score, Corners O/U & 1X2.
-* **Market intelligence** — Shin/Power/Multiplicative de-vig, EV, fractional Kelly, CLV vs Pinnacle closing.
-* **Not a bot** — optimized for **manual, personal use**: you compare `fair_odds = 1/p` vs your bookmaker.
+EPL + Championship, football-data.co.uk, walk-forward with weekly refits.
+Hyperparameters were chosen on matches up to 30 June 2024; the numbers below
+are from the **untouched holdout, 1 July 2024 – October 2026** (2,062 matches).
+Lower is better.
 
-> **Accuracy (expanding window, 40 folds, 1504 tests):** Poisson `log_loss 1.064 brier 0.644` | Pinnacle closing `0.98/0.58`. Hit-rate most-likely 1X2 **54.1%** vs naive home 44.0%.
+| 1X2 | log loss | RPS |
+|---|---|---|
+| Dixon-Coles + SOT blend (default) | **1.0380** | 0.2139 |
+| Poisson + SOT blend | 1.0383 | 0.2139 |
+| Poisson, goals only | 1.0407 | 0.2148 |
+| Bet365 pre-match, Shin de-vig (same matches) | 1.0211 | — |
+| Pinnacle closing, de-vig (1,410 matches; model on the same set: 1.0290) | 1.0089 | — |
 
----
-
-## Features
-
-| Layer | What you get |
+| Over/Under 2.5 | log loss |
 |---|---|
-| **Data** | `football-data.co.uk` E0 (EPL) + E1 (Championship) ingestion, SHA256 snapshots, SQLite time-safe DB, canonical team aliases, timestamped team-news/lineup/injury contracts |
-| **Features** | Rolling `window=5` goals/corners/shots/win_rate + `rest_days` (congestion) |
-| **Models** | Poisson, Dixon-Coles `ρ∈[-0.3,0.3]`, NB2 `Var=μ+μ²/φ`, Bayesian HMC, Corners Poisson/NB, time-decay `w=0.5^{age/half_life}`, SOT blending `g_eff=(1-α)g+α·sot·0.31` |
-| **Markets** | `P(i,j)` score matrix → 1X2, totals, BTTS, Asian Handicap, Correct Score, grouped, Corners, joint correlated parlay legs |
-| **Value** | `edge = p_model - p_market`, `EV = p·odds-1`, `Kelly = EV/(odds-1)·fraction` cap `0.5%`, `fair=1/p` |
-| **Eval** | Expanding/fixed-origin windows, temporal calibration, nested tuning, market-specific scoring, corners backtest |
-| **CLI** | `ingest`, `backtest`, `compare`, `tune`, `predict`, `sync-sportmonks`, `predict-sportmonks`, `calibrate` |
+| Model | 0.6887 |
+| Bet365 pre-match, de-vig | 0.6845 |
 
----
+| Corners O/U 10.5 | log loss |
+|---|---|
+| Corner model | 0.6852 |
+| Constant base rate (fitted on the holdout itself) | 0.6875 |
 
-## Architecture
+What this means:
 
-```
-CSV (E0/E1) + Sportmonks API  ─┐
-                               ├─→ [Schemas+Validation+Normalization] ─→ [Loaders+Sources] ─→ [SQLite]
-                               │                                              ↓
-                               │                                   [Features: rolling pre-match]
-                               │                                              ↓
-                               └─→ [TeamStrengthModel / CornerStrengthModel] ←── MLE (L-BFGS-B, L2) / Heuristic / Bayesian
-                                                                    ↓
-                                                            Score Matrix P(i,j)
-                                                                    ↓
-                                   ┌──────────────┬──────────┬──────┴──────┬────────────┬──────────┐
-                                   1X2        Over/Under  BTTS/WinToNil  CorrectScore  Corners
-                                   └──────────────┴──────────┴─────────────┴────────────┴──────────┘
-                                                                    ↓
-                                                        De-vig (Shin) → EV/Kelly → Dashboard
-                                                                    ↓
-                                                        Backtest / Calibration / Tuning
-```
+- The model is well calibrated (temperature scaling fitted on earlier
+  forecasts leaves the score unchanged, T ≈ 0.98), but it knows only results,
+  shots and corners. Bookmakers also price injuries, lineups and news, and the
+  closing line is sharper still.
+- A naive "bet when the model disagrees with the market" strategy (edge ≥ 3%,
+  EV ≥ 2%) loses money in the holdout (yield −13% ± 4%) with **negative CLV
+  (−8%)**: large disagreements are mostly missing information, not edge.
+- For reference, version 0.1 scored **1.0764** on the 2020–2026 walk-forward
+  because its Dixon-Coles optimizer never moved from its starting point (all
+  team strengths were zero). With identical settings the fixed engine scores
+  1.0298.
 
-* **Score matrix** is the single source of truth — every market is a sum over `M`.
-* **Time-safe by design** — `history[team]` only uses `date < fixture_date`.
-
----
+Reproduce with `parlay fetch --from-season 2018 --to-season 2026` followed by
+`parlay backtest --from 2024-07-01` (and `--model poisson`, `--sot-blend 0`, ...).
 
 ## Installation
 
 ```bash
 git clone https://github.com/bimataylorjoy/parlay.git
 cd parlay
-
-# minimal (numpy+scipy)
-pip install -e .
-
-# with Bayesian HMC (optional)
-pip install -e ".[dev]"  # plus pymc if needed: pip install pymc
-
-# verify
-PYTHONPATH=src python3 -m pytest -q  # 100 passed (82+18 upgrade)
+python -m venv .venv && source .venv/bin/activate
+pip install -e .            # numpy + scipy only
+pip install -e ".[dev]"     # + pytest, ruff, mypy, pre-commit
+pip install -e ".[bayes]"   # + PyMC / ArviZ for --estimator bayesian_hmc
 ```
 
-**Requirements:** Python `>=3.10`, `numpy>=1.24`, `scipy>=1.10`.
+Requires Python ≥ 3.10.
 
----
-
-## Quick Start
-
-### 1. Ingest EPL + Championship
+## Quick start
 
 ```bash
-# EPL 8 seasons (already in data/snapshots)
-PYTHONPATH=src python3 -m parlay.cli ingest \
-  data/raw/snapshots/*E0.csv --competition EPL --season multi --database data/parlay.sqlite
+# 1. Download and ingest EPL (E0) and Championship (E1), seasons 2019-20 .. 2026-27
+parlay fetch --league E0 E1 --from-season 2019 --to-season 2026
 
-# Championship for promoted teams (Coventry, Hull, Wrexham, Charlton, QPR, WBA...)
-PYTHONPATH=src python3 -m parlay.cli ingest \
-  data/raw/snapshots/*E1.csv --competition Championship --season multi
+# 2. Walk-forward backtest; artifacts go to outputs/backtest/
+parlay backtest --from 2024-07-01
+parlay backtest --competition EPL --model poisson --sot-blend 0
+
+# 3. Compare models on identical folds, or tune with an untouched holdout
+parlay compare --from 2024-07-01
+parlay tune --model dixon_coles --holdout-days 365
+
+# 4. Price upcoming fixtures (see examples/)
+parlay predict examples/fixtures_template.csv --output outputs/predictions.csv
 ```
 
-### 2. Predict next GW (EPL GW3 + Championship GW4 early-morning)
-
-```bash
-# EPL GW3 (Man City vs Coventry is now correct)
-cat upcoming_fixtures.csv
-# Date,HomeTeam,AwayTeam,B365H,B365D,B365A,B365>2.5,B365<2.5
-# 05/09/2026,Manchester City,Coventry City,1.28,5.50,11.00,1.50,2.50
-
-PYTHONPATH=src python3 -m parlay.cli predict upcoming_fixtures.csv \
-  --model dixon_coles --estimator mle --half-life-days 365 --sot-weight 0.3
-
-# Championship dini hari 01:45 WIB (4 laga)
-PYTHONPATH=src python3 -m parlay.cli predict upcoming_fixtures_championship.csv \
-  --model dixon_coles --estimator mle --output outputs/predictions_championship_early_simple.csv
-
-# Full 95-col CSV for Excel
-PYTHONPATH=src python3 -m parlay.cli predict upcoming_fixtures.csv \
-  --model dixon_coles --estimator mle --output outputs/predictions_gw3_full.csv
-```
-
-**Sample dashboard** `src/parlay/cli.py:450`:
+`parlay predict` prints a summary table and, per fixture, expected goals,
+1X2 with fair odds, BTTS, totals (with push for integer/quarter lines), Asian
+handicaps, the most likely scores, corners, and every priced selection with
+fair odds, EV and edge over the de-vigged market:
 
 ```
-05/09/2026 | Manchester City vs Coventry City | 82.3% 13.7%  4.1% | 50.1% 49.9% | Home @1.28 EV +5.3%
-  └─ xG: Man City 2.33 - 0.35 Coventry | BTTS Yes 26.4% fair 3.78 | Home Win to Nil 63.8%
-     O/U 2.5 → Over 50.1% fair 2.00 | O/U 2.75 → Over 39.1% fair 2.56 push 11%
-     Correct Score Top5: 2-0 18.7% (5.35) | 1-0 16.0% (6.24) | 3-0 14.5%
-     xCorners: Man City 9.6-2.5 Coventry total 12.0 | Corners O/U 10.5 Over 60.9% fair 1.64
+2026-09-05  Manchester City vs Coventry City
+  xG 2.60 - 0.79   1X2  75.8%  15.5%   8.6%   fair 1.32 / 6.44 / 11.59
+  BTTS yes  50.7%   win-to-nil H  41.8% A   3.7%   double chance 1X  91.4% X2  24.2%
+  Goals  1.5: O  85.5%  2.25: O  65.7% (push 10%)  2.5: O  65.7%  2.75: O  54.7% (push 11%)  3.5: O  43.8%
+  Correct score  2-0 11.5%  3-0 9.9%  2-1 9.0%  1-0 8.4%  3-1 7.8%
+  Corners xC 6.3 - 4.0  8.5: O  65.0%  9.5: O  54.4%  10.5: O  44.0%  11.5: O  34.5%
+  Priced selections:
+    btts:no                      odds   2.30  fair   2.03  EV +13.3% edge +8.8%  <== value
+    totals:over 2.75             odds   1.70  fair   1.63  EV  +4.0% edge +5.3%  <== value
+    asian_handicap:away -1.75    odds   1.98  fair   1.97  EV  +0.3% edge +1.5%
+    totals:over 2.5              odds   1.50  fair   1.52  EV  -1.5% edge +2.3%
+    ...
 ```
 
-### 3. Backtest & Compare
+(The prices in `examples/fixtures_template.csv` are illustrative, so the
+"value" flags above are not real recommendations.)
 
-```bash
-PYTHONPATH=src python3 -m parlay.cli backtest --model dixon_coles --estimator mle \
-  --half-life-days 730 --output-dir outputs/backtest/epl-dixon-coles
-# → outputs/backtest/epl-dixon-coles/metrics.json, predictions.csv, calibration.json
+Value bets require EV ≥ `--min-ev` and edge ≥ `--min-edge`; stakes are
+fractional Kelly capped by `--max-stake`. Fixtures flagged `REJECT` by the
+anomaly layer (extreme disagreement plus thin history) get no recommendation.
 
-PYTHONPATH=src python3 -m parlay.cli compare --estimator mle
-# → outputs/compare/model_comparison.json  (poisson vs dixon_coles vs NB vs market)
+## Fixture CSV format
 
-PYTHONPATH=src python3 -m parlay.cli tune --model poisson
-# grid search half_life
+Required: `Date` (`DD/MM/YYYY`, `DD/MM/YY` or `YYYY-MM-DD`), `HomeTeam`,
+`AwayTeam`. Full names are mapped to football-data names
+(`Manchester City` → `Man City`, see `src/parlay/data/teams.py`). Lines
+starting with `#` are ignored. Optional price columns (prefix `B365` by
+default, `--odds-prefix` for another bookmaker):
+
+| market | columns |
+|---|---|
+| 1X2 | `B365H`, `B365D`, `B365A` |
+| goal totals, any line | `B365>2.5`, `B365<2.5`, `B365>2.75`, ... |
+| BTTS | `B365BTTS_Y`, `B365BTTS_N` |
+| double chance | `B3651X`, `B365X2`, `B36512` |
+| Asian handicap | `AHh` (home line, e.g. `-0.75`), `B365AHH`, `B365AHA` |
+| corner totals | `B365CRN>9.5`, `B365CRN<9.5` (legacy `B365C>9.5` for lines ≥ 5) |
+
+Prices in other formats: `--odds-format indo|malay|hk|american|fractional`
+(e.g. Indonesian `-1.25` → decimal `1.80`).
+
+## CLI reference
+
+Run `parlay <command> --help` for every option.
+
+| command | purpose |
+|---|---|
+| `fetch` | download football-data seasons (`--league E0 E1 SP1 ...`) and ingest them |
+| `ingest` | ingest CSV files or URLs, with SHA-256 snapshots and a manifest |
+| `backtest` | walk-forward backtest of one model; writes `predictions.csv`, `metrics.json`, `calibration.json` |
+| `compare` | all goal models on identical folds |
+| `tune` | half-life × L2 grid; selects on a development period, scores once on a holdout |
+| `calibrate` | temperature scaling fitted on earlier forecasts of a backtest |
+| `predict` | price fixtures from a CSV and list value bets |
+| `sync-sportmonks` / `predict-sportmonks` | fixtures, O/U 2.5 prices and team news from Sportmonks (`SPORTMONKS_API_TOKEN`) |
+
+Shared model options: `--model {poisson,dixon_coles,negative_binomial}`,
+`--estimator {mle,bayesian_hmc}`, `--half-life-days` (or `none`), `--l2-reg`,
+`--sot-blend`. Walk-forward options: `--initial-train-days`, `--test-days`
+(refit cadence, default 7), `--competition` (repeatable; scores only that
+competition but trains on all), `--from` / `--to`, `--bookmaker`.
+
+## Python API
+
+```python
+from datetime import date
+from parlay.data.database import ResearchDatabase
+from parlay.models import fit_team_strength, fit_corner_strength
+from parlay.prediction import Fixture, PredictConfig, predict_fixture
+from parlay.prediction.markets import totals_probabilities, asian_handicap
+
+db = ResearchDatabase("data/parlay.sqlite")
+history = [m for m in db.load_matches() if m.home_goals is not None]
+odds = db.load_odds()
+cutoff = date(2026, 10, 24)
+train = [m for m in history if m.date < cutoff]
+
+model = fit_team_strength(train, model="dixon_coles", as_of=cutoff)
+matrix = model.score_matrix("Arsenal", "Chelsea")
+print(totals_probabilities(matrix, 2.75))   # {'over': ..., 'push': ..., 'under': ...}
+print(asian_handicap(matrix, -0.25))        # home win / push / loss
+
+fixture = Fixture(cutoff, "Arsenal", "Chelsea", odds={("1x2", "home", None): 2.05,
+                                                      ("1x2", "draw", None): 3.5,
+                                                      ("1x2", "away", None): 3.6})
+prediction = predict_fixture(fixture, model, fit_corner_strength(train, as_of=cutoff), PredictConfig())
+print(prediction.value_bets, prediction.diagnostics)
 ```
 
----
+Backtests are configured with a dataclass:
 
-## CLI Reference
-
-| Command | Key Args | Description |
-|---|---|---|
-| `ingest <csv...>` | `--competition`, `--season`, `--database`, `--manifest` | SHA256 snapshot + SQLite upsert |
-| `backtest` | `--model`, `--estimator`, `--half-life-days`, `--sot-weight`, `--initial-train-days 730`, `--test-days 30` | Expanding window, writes `predictions.csv` |
-| `compare` | `--estimator`, `--half-life-days` | All 3 models on identical folds |
-| `tune` | `--model` | Half-life grid search |
-| `predict <fixtures.csv>` | `--model`, `--estimator`, `--kelly-fraction 0.25`, `--max-stake 0.005`, `--min-ev 0.02`, `--output` | Manual dashboard + CSV |
-| `sync-sportmonks` | `--start-date`, `--end-date`, `--token` | Fetch fixtures+totals (EPL `8`, Championship `9`) `src/parlay/data/sportmonks.py:15` |
-| `calibrate <predictions.csv>` | — | Temperature scaling `T` |
-
-**Fixture CSV input** `src/parlay/data/normalization.py:46` — `Date,HomeTeam,AwayTeam` required; optional `B365H,D,A, B365>1.5/<1.5, B365>2.5, B365BTTS_Y/N, B365C>9.5` etc. Full template: `upcoming_fixtures_template.csv:1`.
-
----
-
-## Markets & Maths
-
-**Expected goals** `src/parlay/models/team_strength.py:31`:
-```
-λ_home = exp( μ + γ + α_home - β_away )
-λ_away = exp( μ + α_away - β_home )
-```
-`μ` intercept, `γ` home advantage, `α` attack, `β` defense, sum-to-zero.
-
-**Time decay** `src/parlay/models/team_strength.py:132`: `w = 0.5^{age / half_life}`. **SOT blend**: `g_eff = (1-α)g + α·sot·0.31`.
-
-**Poisson** `src/parlay/models/poisson.py:8`: `P(k;λ)=λ^k e^{-λ}/k!` → `M = outer(P_home,P_away)/sum`.
-
-**Dixon-Coles** `src/parlay/models/dixon_coles.py:27`: `τ(0,0)=1-λμρ, τ(0,1)=1+λρ, τ(1,0)=1+μρ, τ(1,1)=1-ρ` with bounds `ρ≤1/(λμ)`, `ρ≥-1/λ`.
-
-**NB2** `src/parlay/models/negative_binomial.py:8`: `Var=μ+μ²/φ`, `φ = μ̄²/(Var-μ)` MoM.
-
-**MLE** `src/parlay/models/mle.py:79`: `NLL = -Σ w·(g·logλ-λ + low·logτ) + 0.5·l2·Σ(α²+β²)`, `L-BFGS-B` bounds `α,β∈[-3,3]`.
-
-**Corners** `src/parlay/models/corners.py:24` separate `λ_c` with `Var=μ+μ²/φ`, `21×21` matrix.
-
-**Markets** `src/parlay/prediction/markets.py:231`, `src/parlay/models/poisson.py:28`: `P_home=Σ tril(M)`, `P_over(line)=Σ M[total>line]`, `P_btts=Σ M[1:,1:]`, `P_cs[i-j]=M[i,j]`, quarter `2.75 = 0.5·2.5+0.5·3.0`.
-
-**De-vig** `src/parlay/prediction/markets.py:47`: Multiplicative, Power `Σ p^k=1`, Shin `p_i(z)=(√(z²+4(1-z)β_i²/Σβ)-z)/2(1-z)` (default, corrects favourite-longshot bias).
-
-**Value** `src/parlay/prediction/markets.py:128`: `edge = p_model - p_market`, `EV = p·odds-1`, `Kelly = EV/(odds-1)·fraction` cap `0.5%`, `fair=1/p`.
-
----
-
-## Outputs
-
-`predict --output` writes 95 columns (simple 25-col variant: `outputs/predictions_gw3_simple.csv:1`):
-
-* **1X2**: `home_win_prob, fair_home, double_chance_1x`
-* **O/U**: `over_1_5/2_5/2_75/3_5_prob + fair`
-* **BTTS**: `btts_yes_prob, home_win_to_nil`
-* **Correct Score**: `cs_2_0_prob, fair_cs_2_0, cs_other, top_scorelines`
-* **Expectation**: `exp_home_goals, exp_total_corners`
-* **Corners**: `corners_over_10_5_prob, fair_corners_over_10_5, corners_home_most`
-* **Audit**: `B365H, recommendation, recommendation_ev, stake_fraction`
-
-Example `outputs/predictions_championship_early_simple.csv:1` — 4 laga dini hari `01:45 WIB`:
-```
-QPR vs Cardiff → QPR 48.4% fair 2.07 vs 2.40 EV +16% | Under 10.5 corners 63% fair 1.58
-Burnley vs Middlesbrough → Burnley 61.3% fair 1.63 vs 2.00 EV +22% | BTTS No 67% fair 1.49
+```python
+from parlay.evaluation import BacktestConfig, run_backtest
+result = run_backtest(history, odds, BacktestConfig(model="poisson", competitions=("EPL",)))
+print(result.metrics["log_loss"], result.metrics["market_log_loss"])
 ```
 
----
+The modelling details — likelihoods, priors, Dixon-Coles constraints, quarter
+lines, Kelly with pushes, the information-set rules — are in
+[docs/methodology.md](docs/methodology.md).
 
-## Data Layout
-
-```
-data/parlay.sqlite      # SQLite (teams, matches, odds_snapshots, feature_snapshots, predictions)
-data/raw/E0_*.csv        # football-data.co.uk EPL (keep)
-data/raw/snapshots/      # immutable SHA snapshots (ignored in git)
-data/snapshots/*.json    # ingestion manifests
-outputs/                 # backtest / predictions (ignored, regenerate)
-```
-
-Ingestion is **append-only** with `ON CONFLICT(match_id) DO UPDATE` `src/parlay/data/database.py:126`.
-
----
-
-## Evaluation
-
-* **Temporal** `src/parlay/evaluation/temporal.py`: `expanding_window(initial_train 730d, test 30d)`.
-* **Metrics** `src/parlay/evaluation/metrics.py:22`: `log_loss=-ln(p_actual)`, `Brier=Σ(p-1_{actual})²`.
-* **Calibration** `src/parlay/evaluation/calibration.py:10`: `p^{1/T}/Σ p^{1/T}`.
-* **Tuning** `src/parlay/evaluation/tuning.py`: half-life grid search.
-* **Strategy** `evaluate_flat_stake(min_edge 0.03, min_ev 0.02)` + Pinnacle closing baseline `src/parlay/evaluation/backtest.py:166`.
-* **Parlays and information** `src/parlay/prediction/parlay.py` calculates joint leg probabilities from the score matrix; `src/parlay/data/market_information.py` requires declared publication/availability timestamps for team news, lineups, injuries, and odds movement. No external feed is assumed or silently treated as reliable.
-
-### Sportmonks enrichment
-
-Set `SPORTMONKS_API_TOKEN` or pass `--token` to `sync-sportmonks`. The adapter uses the official v3 Football API for:
-
-* fixtures and participants;
-* `lineups` and `predictedLineups`;
-* `sidelined.sideline` and `sidelined.player`;
-* `prematchNews`;
-* premium odds history with `include=history`.
-
-Enrichment is stored as timestamped audit data in the `information_snapshots` table. Only records whose provider-declared `available_at` is no later than the forecast cutoff may be used by a future feature integration. Missing subscription fields are ignored and never replaced with invented lineup, injury, or news values.
-
-The current external feature layer (`features.external.external_information_features`) exposes availability and coverage indicators only. It does not alter goal rates from a lineup or injury count. Player-impact adjustments require historical player ratings, confirmed availability labels, shrinkage, and an out-of-sample ablation benchmark; arbitrary weights are intentionally not applied.
-
-The optional `features.player_impact` module implements the minimum valid adjustment contract: callers must provide externally trained historical player ratings and expected minutes. Without those ratings, lineup/injury data remains an audit feature and reports `unavailable` rather than inventing numerical impact. Active adjustments are capped and must be compared with the no-enrichment baseline through ablation evaluation.
-
-Player-match statistics are represented by `data.schemas.PlayerMatchStat` and can be persisted with `ResearchDatabase.insert_player_match_stats()`. Sportmonks fixture lineups are normalized by `data.sportmonks.parse_player_match_stats()`. `features.player_rating.estimate_player_ratings()` creates shrunken per-90 attack/defense values using minutes-based reliability and excludes rows after the requested cutoff. These ratings are research inputs; they are not silently injected into the production baseline before walk-forward ablation proves value.
-
-Sportmonks premium odds history is a price-update history. It is not a full order book, traded volume, or authenticated bookmaker order flow. The project therefore labels it as market movement evidence and does not treat it as causal signal without separate validation.
-
----
-
-## Project Structure
+## Project layout
 
 ```
 src/parlay/
-  data/         schemas, normalization, validation, loaders, sources, database, ingestion, sportmonks
-  models/       poisson, dixon_coles, negative_binomial, mle, bayesian, team_strength, corners
-  features/     historical, external, player_rating, player_impact
-  evaluation/   backtest, metrics, market, calibration, temporal, compare, tuning, serialization
-  prediction/   markets (de-vig, Kelly, Asian, Correct Score)
-tests/          82 tests (unit + integration + CLI)  →  pytest
-scripts/        run_epl_totals, analyze_asian_totals
+  data/         schemas, CSV loader, team names, SQLite store, information sets, Sportmonks
+  features/     rolling pre-match features, provenance, player ratings (research)
+  models/       MLE engine, Poisson / Dixon-Coles / NB score models, team strength, corners, PyMC
+  prediction/   market maths, de-vig, Kelly, odds formats, fixture pricing, parlays
+  evaluation/   walk-forward backtest, scoring rules, calibration, tuning, regimes, anomalies
+  cli/          `parlay` command (one module per command group) and text rendering
+tests/          unit, statistical (parameter recovery, gradient checks), leakage and CLI tests
+examples/       fixture CSV templates
+docs/           methodology and the original P0-P3 upgrade specification
 ```
 
----
-
-## Development & Testing
+## Development
 
 ```bash
-PYTHONPATH=src python3 -m pytest -q          # 82 passed
-PYTHONPATH=src python3 -m pytest tests/test_markets.py -v
-PYTHONPATH=src python3 -m parlay.cli --help
+make install     # pip install -e ".[dev]"
+make check       # ruff + mypy + pytest
+pre-commit install
 ```
 
-* **No Docker/CI required** — pure Python, SQLite, `numpy/scipy`.
-* **Config** via CLI flags; `half_life_days`, `sot_weight`, `l2_reg` tune sharpness, not automation.
+CI runs lint, type checks and the test suite on Python 3.10–3.12.
 
----
+## Upgrading from 0.1
 
-## Statistical Correctness Upgrade (P0-P3)
+- **Rebuild the database.** Match IDs no longer include the season label, so
+  re-ingesting into an old database would duplicate matches:
+  `rm data/parlay.sqlite && parlay fetch --to-season 2026`.
+- Removed options: `--sot-weight` (it never affected the model),
+  `--early-season-shrinkage` (it shrank every prediction 75% toward average),
+  `--estimator heuristic`, and the experimental `models.dynamic`.
+  Shrinkage now comes from the L2 prior (`--l2-reg`); shots on target from
+  `--sot-blend`.
+- `run_backtest(matches, odds, BacktestConfig(...))` replaces the long keyword
+  lists; `run_backtest_full` and `tune_half_life_nested` were folded into
+  `run_backtest` and `nested_tuning`.
+- `prediction.markets.totals_probabilities` replaces
+  `totals_settlement_probabilities`, `corner_totals_probabilities` and
+  `models.poisson.totals_probability`.
+- `cli.py` became the `parlay.cli` package; `python -m parlay` still works.
+- Corner odds columns in fixture CSVs: prefer `B365CRN>x` (football-data uses
+  `B365C>2.5` for closing goal totals).
 
-This repository has been upgraded per `parlay_upgrade.md` — priority **Information Quality → Temporal Correctness → Statistical Model → Uncertainty**.
+## Limitations
 
-**Model assumptions:** Poisson `P(k;λ)=λ^k e^{-λ}/k!` with `λ=exp(μ+γ+α-β)` clipped `[-3,3]`; Dixon-Coles `τ` globally consistent `ρ∈[max(-1/λ), min(1,1/λμ)]` (no per-match clip); NB2 `Var=μ+μ²/φ, φ=exp(logφ)` joint MLE; Corners separate Poisson/NB2 with `21×21` adaptive `ε=1e-6`.
-
-**Information availability:** `InformationSet(as_of=forecast, competition)` where `result_known_at = kickoff + lag` (`EPL 115m, Championship 118m`, fallback `23:59` if no kickoff), `forecast = kickoff -60m`. `feature_timestamp ≤ forecast` enforced via `InformationSet.is_result_knowable()` — no `date<=as_of` leakage.
-
-**Temporal evaluation:** `expanding_window(mode="rolling_origin"|"fixed_origin")` with metadata `evaluation_mode, forecast_policy, model_update_frequency`. Temperature calibration supports disjoint calibration/test windows and the CLI requires forecast timestamps. Hyperparameter tuning is **nested** (`development → lock → holdout`). Market adapters score binary and multiclass market records independently; corners use `run_corners_backtest` with their own temporal metrics.
-
-**Uncertainty:** Exchangeable priors `attack_raw~Normal(0,0.5,n)-mean` (no `α_last=-sum` asymmetry), posterior predictive `P(Y|D)=∫P(Y|θ)P(θ|D)dθ` via Monte Carlo subsample `200` with `λ CI 5/95%` and `Rhat/ESS/divergences`. SOT is **not** fractional pseudo-goals but league-aware covariate `logλ+=β_sot[league]·sot_signal` (`EPL 0.28/Champ 0.22` shrinkage).
-
-**Known limitations:** Promoted teams (`Coventry/Hull` 2 EPL matches) have `n<10` → `anomaly_flags=["insufficient_historical_sample","promoted_new_team_uncertainty"]` and `REJECT` if disagreement >0.25; market (Pinnacle `log_loss 0.98`) still sharper than model (`1.06`); `max_goals` adaptive `ε=1e-6` caps at 20 for speed.
-
-**Parlay warning:** Per-leg EV is not a parlay EV. Combined legs must use `parlay_from_score_matrix()` or another joint model. For example, BTTS + Over 2.5 and 1X2 + Correct Score are dependent events because they share the same goals. Odds movement summaries are descriptive price histories, not order-flow truth; actual order-flow data requires a timestamped, source-specific feed.
-
-Architecture now:
-
-```
-InformationSet ─→ Database/Features/Backtest (centralized gating)
-       ↓
-TeamStrength (cached by cutoff, deterministic) ─→ Score Matrix adaptive ε=1e-6 ─→ PredictionResult(probabilities, expected_rates{ci}, uncertainty{anomaly_flags, decision}, model_metadata)
-```
+- Only results, shots on target and corners inform the ratings: no lineups,
+  injuries, suspensions, managers or transfers.
+- Teams with fewer than ~10 matches in the data are scored noticeably worse
+  (holdout log loss 1.19 on 36 such matches vs 1.04) and are flagged in predictions.
+- The corner model beats a constant base rate only slightly; corner prices
+  are the least reliable output.
+- Sportmonks team news and lineups are stored with availability timestamps
+  but are not used to adjust rates yet.
 
 ## Contributors
 
-* **bimataylorjoy** — [@bimataylorjoy](https://github.com/bimataylorjoy) (maintainer, multi-market engine, Championship ingestion, CLI dashboard, P0-P3 upgrade) `pyproject.toml:12`
+- **bimataylorjoy** — [@bimataylorjoy](https://github.com/bimataylorjoy), maintainer.
 
-Contributions welcome — open an issue or PR. For betting syndicate-grade accuracy, see `docs/ROADMAP.md` (planned: player-level xG, rest-day congestion, live in-play).
-
----
-
-## License
-
-MIT — see `LICENSE` (research-only, no warranty).
-
----
+Issues and pull requests are welcome.
 
 ## Disclaimer
 
-This is a **research framework**, not a tipster service. Probabilities are estimates from historical goals/corners. The market (Pinnacle closing `log_loss 0.98`) is still sharper than the model (`1.06`). Use `fair odds` as a **screening filter** with strict bankroll (≤0.5% per bet) and always compare to your bookmaker's live price.
+This is a research framework, not a tipster service. Probabilities are model
+estimates with real uncertainty, and the backtests above show no exploitable
+edge against the market. Never stake money you cannot afford to lose.

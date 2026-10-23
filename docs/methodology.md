@@ -55,6 +55,14 @@ with ρ restricted to `[−0.3, 0.3]`.
   connect the two leagues, so a promoted team enters the Premier League with a
   strength estimated on the same scale.
 
+**Shots-on-target blend** (`sot_blend`, default 0.5). The same engine is
+fitted to shots-on-target counts and every team parameter becomes
+`(1 − w)·goals_estimate + w·sot_estimate`. Shots on target are about four
+times as frequent as goals, so they measure team quality with less noise; the
+intercept and home advantage still come from goals. On the 2024–26 holdout
+this improves 1X2 log loss from 1.0407 to 1.0383 and O/U 2.5 from 0.6918 to
+0.6887.
+
 `estimator="bayesian_hmc"` (optional `bayes` extra) samples the Poisson model
 with PyMC NUTS using exchangeable priors; predictions then average score
 matrices over posterior draws (posterior predictive), not plug-in means.
@@ -63,7 +71,10 @@ matrices over posterior draws (posterior predictive), not plug-in means.
 
 `models/corners.py` uses the same engine on corner counts with an NB2
 likelihood whose dispersion is estimated (corners are over-dispersed). It is
-fitted and evaluated independently of the goal model.
+fitted and evaluated independently of the goal model, with much stronger
+shrinkage (`l2 = 150`, half-life 270 days): corner counts carry little team
+signal relative to their noise, and with the goal settings the model was worse
+than a constant base rate.
 
 ## 4. From score matrix to markets
 
