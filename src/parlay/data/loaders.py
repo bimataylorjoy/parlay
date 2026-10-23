@@ -6,39 +6,17 @@ import csv
 import hashlib
 import logging
 from collections.abc import Iterable
-from dataclasses import dataclass
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timezone, tzinfo
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .normalization import TeamRegistry
+from .odds_columns import row_odds
 from .schemas import Match, OddsSnapshot
 from .teams import canonical_team_name
 from .validation import validate_matches
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True, slots=True)
-class _OddsColumns:
-    bookmaker: str
-    market: str
-    columns: tuple[tuple[str, str], ...]  # (selection, column)
-    closing: bool
-
-
-# Pre-match ("opening" in football-data terms: collected before the weekend
-# or midweek round) and closing prices. Closing prices are only ever used as
-# an evaluation benchmark.
-ODDS_COLUMNS: tuple[_OddsColumns, ...] = (
-    _OddsColumns("Bet365", "1x2", (("home", "B365H"), ("draw", "B365D"), ("away", "B365A")), False),
-    _OddsColumns("Pinnacle", "1x2", (("home", "PSH"), ("draw", "PSD"), ("away", "PSA")), False),
-    _OddsColumns("Bet365", "1x2", (("home", "B365CH"), ("draw", "B365CD"), ("away", "B365CA")), True),
-    _OddsColumns("Pinnacle", "1x2", (("home", "PSCH"), ("draw", "PSCD"), ("away", "PSCA")), True),
-    _OddsColumns("Bet365", "totals_2.5", (("over", "B365>2.5"), ("under", "B365<2.5")), False),
-    _OddsColumns("Pinnacle", "totals_2.5", (("over", "P>2.5"), ("under", "P<2.5")), False),
-    _OddsColumns("Bet365", "totals_2.5", (("over", "B365C>2.5"), ("under", "B365C<2.5")), True),
-    _OddsColumns("Pinnacle", "totals_2.5", (("over", "PC>2.5"), ("under", "PC<2.5")), True),
-)
 
 
 def parse_date(value: str) -> date:
@@ -52,15 +30,23 @@ def parse_date(value: str) -> date:
     raise ValueError(f"Unsupported match date: {value!r} (expected DD/MM/YYYY, DD/MM/YY or YYYY-MM-DD)")
 
 
+try:
+    UK_TIME: tzinfo = ZoneInfo("Europe/London")
+except ZoneInfoNotFoundError:  # pragma: no cover - systems without a tz database
+    UK_TIME = timezone.utc
+
+
 def _parse_kickoff(match_date: date, value: str) -> datetime | None:
+    """football-data kickoff times are UK local time; return them in UTC."""
     value = value.strip()
     if not value:
         return None
     for format_ in ("%H:%M", "%H:%M:%S"):
         try:
-            return datetime.combine(match_date, datetime.strptime(value, format_).time(), tzinfo=timezone.utc)
+            local = datetime.combine(match_date, datetime.strptime(value, format_).time(), tzinfo=UK_TIME)
         except ValueError:
             continue
+        return local.astimezone(timezone.utc)
     raise ValueError(f"Unsupported kickoff time: {value!r}")
 
 
@@ -74,18 +60,6 @@ def _integer(value: str | None, field: str, *, required: bool = True) -> int | N
         return int(float(value))
     except ValueError as exc:
         raise ValueError(f"Invalid integer in {field}: {value!r}") from exc
-
-
-def _price(value: str | None) -> float | None:
-    """Decimal odds, or ``None`` for blank / malformed / non-positive-edge prices."""
-    value = (value or "").strip()
-    if not value:
-        return None
-    try:
-        price = float(value)
-    except ValueError:
-        return None
-    return price if price > 1.0 else None
 
 
 def season_for(match_date: date) -> str:
@@ -108,7 +82,10 @@ def load_football_data_csv(
     competition: str = "unknown",
     season: str | None = None,
 ) -> tuple[list[Match], list[OddsSnapshot]]:
-    """Load completed matches, match statistics and recognized odds columns.
+    """Load completed matches, match statistics and every recognized bookmaker's odds.
+
+    Pre-match prices are stamped at 00:00 UTC of the match day (football-data
+    collects them before the round); closing prices at kickoff.
 
     Team names are canonicalized (through ``registry`` when given) before
     ``Match`` objects are built. ``season=None`` derives the label from each
@@ -123,8 +100,6 @@ def load_football_data_csv(
         missing = {"Date", "HomeTeam", "AwayTeam", "FTHG", "FTAG"} - set(reader.fieldnames)
         if missing:
             raise ValueError(f"CSV is missing columns: {sorted(missing)}")
-        available = set(reader.fieldnames)
-        odds_groups = [group for group in ODDS_COLUMNS if all(col in available for _, col in group.columns)]
         matches: list[Match] = []
         odds: list[OddsSnapshot] = []
         skipped_prices = 0
@@ -157,21 +132,14 @@ def load_football_data_csv(
                 )
             )
             pre_match_at = datetime.combine(match_date, time(0, 0), tzinfo=timezone.utc)
-            closing_at = kickoff_at or pre_match_at.replace(hour=12)
-            for group in odds_groups:
-                parsed = {selection: _price(row.get(column)) for selection, column in group.columns}
-                prices = {selection: value for selection, value in parsed.items() if value is not None}
-                if len(prices) != len(parsed):
-                    if any((row.get(column) or "").strip() for _, column in group.columns):
-                        skipped_prices += 1
-                    continue
-                captured = closing_at if group.closing else pre_match_at
-                odds.extend(
-                    OddsSnapshot(
-                        match_id, group.bookmaker, group.market, selection, price, captured, group.closing
-                    )
-                    for selection, price in prices.items()
-                )
+            snapshots, skipped = row_odds(
+                row,
+                match_id,
+                pre_match_at=pre_match_at,
+                closing_at=kickoff_at or pre_match_at.replace(hour=12),
+            )
+            odds.extend(snapshots)
+            skipped_prices += skipped
     if skipped_prices:
         logger.warning("%s: skipped %d incomplete or malformed odds groups", path.name, skipped_prices)
     return validate_matches(matches), odds
@@ -190,3 +158,48 @@ def load_many(
         matches.extend(loaded_matches)
         odds.extend(loaded_odds)
     return matches, odds
+
+
+def load_football_data_fixtures(
+    path: str | Path,
+    *,
+    captured_at: datetime,
+    leagues: dict[str, str] | None = None,
+) -> tuple[list[Match], list[OddsSnapshot]]:
+    """Upcoming matches and their prices from football-data's ``fixtures.csv``.
+
+    ``leagues`` maps division codes (``Div`` column) to competition labels;
+    other divisions are skipped. Prices are stamped with ``captured_at`` (the
+    download time), since the file carries no capture timestamp of its own.
+    """
+    from .sources import FOOTBALL_DATA_LEAGUES
+
+    leagues = leagues or FOOTBALL_DATA_LEAGUES
+    matches: list[Match] = []
+    odds: list[OddsSnapshot] = []
+    with Path(path).open("r", encoding="utf-8-sig", newline="") as handle:
+        for row in csv.DictReader(handle):
+            competition = leagues.get((row.get("Div") or "").strip())
+            if competition is None or not (row.get("HomeTeam") or "").strip():
+                continue
+            home, away = canonical_team_name(row["HomeTeam"]), canonical_team_name(row["AwayTeam"])
+            match_date = parse_date(row["Date"])
+            kickoff_at = _parse_kickoff(match_date, row.get("Time", "") or "")
+            match_id = match_id_for(match_date, home, away, competition)
+            matches.append(
+                Match(
+                    match_id=match_id,
+                    date=match_date,
+                    competition=competition,
+                    season=season_for(match_date),
+                    home_team=home,
+                    away_team=away,
+                    home_goals=None,
+                    away_goals=None,
+                    source="football-data fixtures",
+                    kickoff_at=kickoff_at,
+                )
+            )
+            snapshots, _ = row_odds(row, match_id, pre_match_at=captured_at, closing_at=captured_at)
+            odds.extend(s for s in snapshots if not s.is_closing)
+    return validate_matches(matches, require_result=False), odds

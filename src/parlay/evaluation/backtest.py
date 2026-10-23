@@ -59,7 +59,7 @@ class BacktestConfig:
     forecast_lead_minutes: int = 60
     competitions: tuple[str, ...] | None = None
     bookmaker: str | None = "Bet365"
-    closing_bookmaker: str = "Pinnacle"
+    closing_bookmakers: tuple[str, ...] = ("Pinnacle", "Betfair Exchange")
     calibration_mode: str | None = None
     evaluation_start: date | None = None
     evaluation_end: date | None = None
@@ -222,7 +222,10 @@ def _predict_fold(fold, fitted, config: BacktestConfig, odds_index) -> list[Pred
         forecast = forecast_timestamp(match, config.forecast_lead_minutes)
         odds_rows = odds_index.get(match.match_id, [])
         market, prices = _pre_match_1x2(odds_rows, forecast, config.bookmaker)
-        closing = _closing_1x2(odds_rows, config.closing_bookmaker)
+        closing = next(
+            (c for book in config.closing_bookmakers if (c := _closing_1x2(odds_rows, book)) is not None),
+            None,
+        )
         market_over, odds_over, odds_under = _pre_match_totals(odds_rows, forecast, config.bookmaker)
         totals = totals_probabilities(matrix, 2.5)
         btts = float(matrix[1:, 1:].sum())

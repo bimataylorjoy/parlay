@@ -72,7 +72,7 @@ def test_loader_reads_results_stats_and_odds(tmp_path):
     assert (match.home_team, match.away_team) == ("Man City", "Nott'm Forest")
     assert match.season == "2025-26"
     assert (match.home_sot, match.away_corners, match.home_shots) == (6, 2, 14)
-    assert match.kickoff_at == datetime(2025, 8, 16, 20, tzinfo=timezone.utc)
+    assert match.kickoff_at == datetime(2025, 8, 16, 19, tzinfo=timezone.utc)  # 20:00 BST
     by_key = {(o.bookmaker, o.market, o.is_closing) for o in odds}
     assert by_key == {("Bet365", "1x2", False), ("Pinnacle", "1x2", True), ("Bet365", "totals_2.5", False)}
     closing = [o for o in odds if o.is_closing]
@@ -98,3 +98,32 @@ def test_loader_rejects_missing_columns(tmp_path):
     path.write_text("Date,HomeTeam,AwayTeam\n", encoding="utf-8")
     with pytest.raises(ValueError, match="missing columns"):
         load_football_data_csv(path)
+
+
+def test_kickoff_times_are_converted_from_uk_time(tmp_path):
+    path = tmp_path / "E0.csv"
+    path.write_text(
+        "Date,Time,HomeTeam,AwayTeam,FTHG,FTAG\n16/08/2025,15:00,A,B,1,0\n06/12/2025,15:00,B,A,0,0\n",
+        encoding="utf-8",
+    )
+    summer, winter = load_football_data_csv(path)[0]
+    assert summer.kickoff_at.hour == 14  # BST = UTC+1
+    assert winter.kickoff_at.hour == 15  # GMT = UTC
+
+
+def test_loader_reads_every_bookmaker_asian_lines_and_closing_prices(tmp_path):
+    path = tmp_path / "E0.csv"
+    header = (
+        "Date,Time,HomeTeam,AwayTeam,FTHG,FTAG,BWH,BWD,BWA,BFEH,BFED,BFEA,MaxH,MaxD,MaxA,"
+        "AHh,PAHH,PAHA,AHCh,PCAHH,PCAHA"
+    )
+    path.write_text(
+        header + "\n06/12/2025,15:00,A,B,1,0,2.0,3.4,3.9,2.1,3.6,4.2,2.2,3.7,4.4,-0.25,1.9,2.0,-0.5,2.1,1.8\n"
+    )
+    _, odds = load_football_data_csv(path)
+    books = {(o.bookmaker, o.market, o.is_closing) for o in odds}
+    assert ("bwin", "1x2", False) in books
+    assert ("Betfair Exchange", "1x2", False) in books
+    assert ("market_max", "1x2", False) in books
+    assert ("Pinnacle", "ah_-0.25", False) in books
+    assert ("Pinnacle", "ah_-0.5", True) in books
