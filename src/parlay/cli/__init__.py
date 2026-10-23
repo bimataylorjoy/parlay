@@ -6,7 +6,7 @@ import argparse
 import logging
 
 from parlay import __version__
-from parlay.cli.commands import data, evaluate, predict, sportmonks
+from parlay.cli.commands import betting, data, evaluate, predict, sportmonks
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -20,6 +20,7 @@ def build_parser() -> argparse.ArgumentParser:
     data.register(commands)
     evaluate.register(commands)
     predict.register(commands)
+    betting.register(commands)
     sportmonks.register(commands)
     return parser
 

@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- `parlay.betting`: fair prices from Pinnacle / Betfair Exchange / consensus,
+  value finder over the bookmakers you use (exchange commission, Kelly with
+  uncertainty shrinkage), bet ledger with closing-line value and settlement
+  of 1X2, totals and Asian handicaps (including quarter lines), and a
+  historical value backtest.
+- Free odds feeds: football-data `fixtures.csv` and The Odds API (Pinnacle in
+  region `eu`). CLI: `odds sync`, `value`, `bets add|update|report|list`,
+  `backtest-value`.
+- Loader stores every football-data bookmaker, best/average prices, Betfair
+  Exchange, Asian handicap lines and closing prices.
+
+### Fixed
+- football-data kickoff times are UK local time; they are now converted to UTC.
+- Syncing a scheduled match no longer erases a stored result.
+- Model backtests fall back to Betfair Exchange closing prices when Pinnacle
+  is missing (football-data dropped Pinnacle in 2026-27).
+
 ## 0.2.0 — 2026-10-23
 
 ### Fixed

@@ -13,9 +13,14 @@ into a full score distribution for any fixture, prices every common market
 corners) and evaluates everything with **walk-forward backtests that cannot see
 the future**.
 
-> Research software. It does not place bets, and its backtests show that the
-> betting market — especially the closing line — is still sharper than the
-> model. Treat model prices as a second opinion, not as an edge.
+It also includes a **price-based value-betting workflow**: compare bookmaker
+prices with the de-vigged Pinnacle price, log bets in a ledger, and measure
+closing-line value. That — not the goal model — is where the backtests show
+an edge ([docs/value-betting.md](docs/value-betting.md)).
+
+> Research software. It does not place bets. The goal model is well calibrated
+> but carries no information beyond the market; treat its prices as a second
+> opinion. Never stake money you cannot afford to lose.
 
 ---
 
@@ -23,6 +28,7 @@ the future**.
 
 - [Highlights](#highlights)
 - [Benchmarks](#benchmarks)
+- [Value betting](#value-betting)
 - [Installation](#installation)
 - [Quick start](#quick-start)
 - [Fixture CSV format](#fixture-csv-format)
@@ -92,6 +98,26 @@ What this means:
 
 Reproduce with `parlay fetch --from-season 2018 --to-season 2026` followed by
 `parlay backtest --from 2024-07-01` (and `--model poisson`, `--sot-blend 0`, ...).
+
+## Value betting
+
+```bash
+export THE_ODDS_API_KEY=...                       # free key: 500 credits/month, region eu includes Pinnacle
+export PARLAY_BOOKS="Bet365,William Hill"         # bookmakers you can use
+parlay odds sync                                   # football-data fixtures.csv (free, no key)
+parlay odds sync --source the-odds-api             # Pinnacle reference
+parlay value --paper                               # value bets vs the fair Pinnacle price
+parlay bets add vb:1a2b3c4d --stake 10 --odds 2.12
+parlay bets update && parlay bets report           # closing-line value, yield, verdict
+parlay backtest-value --from 2019-07-01            # same engine on historical prices
+```
+
+Historical test (July 2019 – June 2026, regular bookmakers vs the Pinnacle
+reference, EV ≥ 2%): 331 bets, **closing-line value +3.3% ± 0.6%**, positive
+in every season; flat yield +3.3% ± 11.4% (not yet significant). Against the
+Betfair Exchange snapshot or the bookmaker consensus the CLV is ≤ 0, so the
+default reference is Pinnacle. Details, data sources and the daily workflow:
+[docs/value-betting.md](docs/value-betting.md).
 
 ## Installation
 
@@ -184,6 +210,10 @@ Run `parlay <command> --help` for every option.
 | `tune` | half-life × L2 grid; selects on a development period, scores once on a holdout |
 | `calibrate` | temperature scaling fitted on earlier forecasts of a backtest |
 | `predict` | price fixtures from a CSV and list value bets |
+| `odds sync` | store upcoming prices from football-data `fixtures.csv` or The Odds API |
+| `value` | value bets against the de-vigged Pinnacle price; `--paper` logs them |
+| `bets add / update / report / list` | bet ledger with closing-line value and settlement |
+| `backtest-value` | replay the value engine on historical football-data prices |
 | `sync-sportmonks` / `predict-sportmonks` | fixtures, O/U 2.5 prices and team news from Sportmonks (`SPORTMONKS_API_TOKEN`) |
 
 Shared model options: `--model {poisson,dixon_coles,negative_binomial}`,
@@ -239,11 +269,12 @@ src/parlay/
   features/     rolling pre-match features, provenance, player ratings (research)
   models/       MLE engine, Poisson / Dixon-Coles / NB score models, team strength, corners, PyMC
   prediction/   market maths, de-vig, Kelly, odds formats, fixture pricing, parlays
+  betting/      sharp reference prices, value finder, bet ledger with CLV, settlement, value backtest
   evaluation/   walk-forward backtest, scoring rules, calibration, tuning, regimes, anomalies
   cli/          `parlay` command (one module per command group) and text rendering
 tests/          unit, statistical (parameter recovery, gradient checks), leakage and CLI tests
 examples/       fixture CSV templates
-docs/           methodology and the original P0-P3 upgrade specification
+docs/           methodology, value betting, and the original P0-P3 upgrade specification
 ```
 
 ## Development
@@ -259,8 +290,10 @@ CI runs lint, type checks and the test suite on Python 3.10–3.12.
 ## Upgrading from 0.1
 
 - **Rebuild the database.** Match IDs no longer include the season label, so
-  re-ingesting into an old database would duplicate matches:
-  `rm data/parlay.sqlite && parlay fetch --to-season 2026`.
+  re-ingesting into an old database would duplicate matches; the loader now
+  also stores every bookmaker, Asian handicap and closing price, and converts
+  football-data kickoff times from UK time to UTC:
+  `rm data/parlay.sqlite && parlay fetch --from-season 2018 --to-season 2026`.
 - Removed options: `--sot-weight` (it never affected the model),
   `--early-season-shrinkage` (it shrank every prediction 75% toward average),
   `--estimator heuristic`, and the experimental `models.dynamic`.
