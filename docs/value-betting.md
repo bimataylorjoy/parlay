@@ -97,11 +97,34 @@ discarded as stale or erroneous prices.
   few hundred bets, and keep stakes small: even a genuine 2–3% edge produces
   long losing runs.
 
+## Does the goal model add anything? (`parlay anchor-test`)
+
+`parlay anchor-test outputs/backtest/predictions.csv` fits a market-anchored
+adjustment, `score_k = log p_pinnacle_k + Σ w_j x_jk`, walk-forward by season,
+with features the market might price slowly: the goal model's log-ratio to
+Pinnacle, Bet365's log-ratio to Pinnacle, rest-day difference, promoted-team
+difference and a market-recalibration term. On synthetic data the test
+recovers a genuinely informative feature and rejects noise
+(`tests/test_anchored.py`). On EPL + Championship 2022–2026 (3,260 matches,
+out of sample):
+
+| | log loss | bets | CLV |
+|---|---|---|---|
+| Pinnacle price as is | 1.0023 | 209 | **+2.1% ± 0.7%** |
+| Market-anchored adjustment (all features) | 1.0029 | 458 | −1.1% ± 0.4% |
+| Bet365 deviation only | 1.0024 | 199 | +2.0% ± 0.8% |
+| Rest days + promoted teams only | 1.0028 | 340 | −0.1% ± 0.5% |
+
+The weight on the goal model is negative in every season (−0.08 to −0.16):
+its disagreements with Pinnacle are noise. **Bets are therefore priced against
+the plain Pinnacle price**, and any new feature must pass `anchor-test`
+(significant log-loss gain *and* higher CLV) before it may influence bets.
+
 ## Next steps
 
-1. Use more odds snapshots per day close to kickoff, so the closing proxy
-   and prices are fresher.
-2. Market-anchored model: `logit p = logit p_market + f(features)` with
-   features the market prices slowly (confirmed lineups, injuries, xG),
-   trained with a decorrelation penalty and accepted only if its
-   opinion-pool weight is positive out of sample.
+1. More odds snapshots per day, closer to kickoff (fresher prices and a
+   better closing proxy). `parlay daily` twice a day uses ~240 of the 500
+   monthly The Odds API credits for two leagues.
+2. New information for `anchor-test`: football-data added expected goals
+   (HxG/AxG) in 2026-27, and confirmed lineups arrive ~60 minutes before
+   kickoff. Both need a season or more of history before they can be tested.

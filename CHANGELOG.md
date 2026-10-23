@@ -11,6 +11,10 @@
 - Free odds feeds: football-data `fixtures.csv` and The Odds API (Pinnacle in
   region `eu`). CLI: `odds sync`, `value`, `bets add|update|report|list`,
   `backtest-value`.
+- `parlay daily` routine and `parlay anchor-test` (market-anchored adjustment,
+  walk-forward by season). Result on 2022-26: the goal model and simple
+  features add no information beyond Pinnacle (model weight negative every
+  season), so bets stay priced against the plain Pinnacle price.
 - Loader stores every football-data bookmaker, best/average prices, Betfair
   Exchange, Asian handicap lines and closing prices.
 

@@ -179,6 +179,21 @@ def register(commands: argparse._SubParsersAction) -> None:
     listing.add_argument("--open", action="store_true", help="only unsettled bets")
     listing.set_defaults(handler=run_bets_list)
 
+    anchor = commands.add_parser(
+        "anchor-test",
+        help="does the goal model (or other features) add information to the Pinnacle price?",
+    )
+    add_database(anchor)
+    anchor.add_argument(
+        "predictions", type=Path, help="predictions.csv from `parlay backtest` (out-of-sample)"
+    )
+    anchor.add_argument("--l2", type=float, default=1.0, help="L2 penalty on the adjustment weights")
+    anchor.add_argument("--min-ev", type=float, default=0.02)
+    anchor.add_argument(
+        "--books", default=os.environ.get("PARLAY_BOOKS"), help="bookmakers used in the bet simulation"
+    )
+    anchor.set_defaults(handler=run_anchor_test)
+
     backtest = commands.add_parser("backtest-value", help="replay the value engine on historical prices")
     add_database(backtest)
     _add_value_options(backtest)
@@ -536,4 +551,65 @@ def run_daily(args: argparse.Namespace) -> int:
             if isinstance(exc, SystemExit) and exc.code in (0, None):
                 continue
             print(f"step failed: {exc}")
+    return 0
+
+
+def run_anchor_test(args: argparse.Namespace) -> int:
+    import csv
+
+    from parlay.betting.anchored import FEATURES, build_rows, evaluate_anchored
+
+    if not args.predictions.exists():
+        raise SystemExit(f"{args.predictions} not found; run `parlay backtest --output-dir ...` first")
+    with args.predictions.open(encoding="utf-8") as handle:
+        model = {
+            row["match_id"]: (float(row["home_win"]), float(row["draw"]), float(row["away_win"]))
+            for row in csv.DictReader(handle)
+        }
+    database = _open_database(args.database)
+    rows = build_rows(database.load_matches(), database.load_odds(), model, bettable=_books(args.books))
+    database.close()
+    report = evaluate_anchored(rows, l2=args.l2, min_ev=args.min_ev)
+    if not report.pooled:
+        print("Not enough seasons with Pinnacle prices and model forecasts.")
+        return 0
+    print(f"{len(rows)} matches with a Pinnacle pre-match price and an out-of-sample model forecast.\n")
+    print(
+        table(
+            ["season", "n", "market LL", "anchored LL", "gain", *FEATURES],
+            [
+                [
+                    str(r["season"]),
+                    f"{r['n']:.0f}",
+                    f"{r['market_log_loss']:.4f}",
+                    f"{r['anchored_log_loss']:.4f}",
+                    f"{r['improvement']:+.4f} ± {r['improvement_se']:.4f}",
+                    *(f"{report.weights[str(r['season'])][f]:+.3f}" for f in FEATURES),
+                ]
+                for r in report.seasons
+            ],
+        )
+    )
+    p = report.pooled
+    print(
+        f"\nPooled out-of-sample: market {p['market_log_loss']:.4f} vs anchored {p['anchored_log_loss']:.4f} "
+        f"(gain {p['improvement']:+.4f} ± {p['improvement_se']:.4f}, n={p['n']:.0f})"
+    )
+    for prefix in ("market", "anchored"):
+        bets, yld, yse = p[f"{prefix}_bets"], p[f"{prefix}_yield"], p[f"{prefix}_yield_se"]
+        clv, cse = p[f"{prefix}_mean_clv"], p[f"{prefix}_clv_se"]
+        print(
+            f"Bets priced with {prefix:<8}: {bets:.0f} bets, "
+            f"yield {yld:+.2%} ± {yse:.2%}, CLV {clv:+.2%} ± {cse:.2%}"
+        )
+    significant = p["improvement"] > 2 * p["improvement_se"]
+    better_clv = p["anchored_mean_clv"] > p["market_mean_clv"]
+    print(
+        "\nVerdict: "
+        + (
+            "the adjustment adds information (significant log-loss gain and higher CLV)."
+            if significant and better_clv
+            else "no reliable information beyond the Pinnacle price; keep pricing bets against the market."
+        )
+    )
     return 0
