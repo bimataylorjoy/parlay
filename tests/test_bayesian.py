@@ -1,7 +1,10 @@
 import numpy as np
 import pytest
 
-from parlay.models.bayesian import fit_poisson_bayesian
+pytest.importorskip("pymc")
+
+from parlay.models.bayesian import fit_poisson_bayesian  # noqa: E402
+
 
 def test_bayesian_model_compiles_and_samples():
     home_idx = np.array([0, 1, 0])
