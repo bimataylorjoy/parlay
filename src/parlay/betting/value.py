@@ -21,7 +21,13 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 
-from parlay.data.odds_columns import EXCHANGE, MARKET_AVG, MARKET_MAX, PSEUDO_BOOKMAKERS, parse_market
+from parlay.data.odds_columns import (
+    EXCHANGE_COMMISSION,
+    MARKET_AVG,
+    MARKET_MAX,
+    PSEUDO_BOOKMAKERS,
+    parse_market,
+)
 from parlay.data.schemas import Match, OddsSnapshot
 from parlay.prediction.markets import DE_VIG_METHODS
 
@@ -40,7 +46,7 @@ class ValueConfig:
     max_ev: float = 0.30  # larger "edges" are almost always stale or erroneous prices
     min_odds: float = 1.15
     max_odds: float = 10.0
-    exchange_commission: float = 0.05
+    exchange_commission: float | None = None  # None: per-exchange default (Betfair 5%, Matchbook 2%)
     kelly_fraction: float = 0.25
     max_stake: float = 0.02
     probability_sd: float = 0.02
@@ -55,7 +61,8 @@ class ValueConfig:
         unknown = set(self.markets) - set(MARKET_KINDS)
         if unknown:
             raise ValueError(f"unknown market kinds {sorted(unknown)}; expected {MARKET_KINDS}")
-        if not 0 <= self.exchange_commission < 1 or not 0 <= self.kelly_fraction <= 1:
+        commission_ok = self.exchange_commission is None or 0 <= self.exchange_commission < 1
+        if not commission_ok or not 0 <= self.kelly_fraction <= 1:
             raise ValueError("exchange_commission must be in [0, 1) and kelly_fraction in [0, 1]")
         if not 0 < self.max_stake <= 1 or self.probability_sd < 0:
             raise ValueError("max_stake must be in (0, 1] and probability_sd non-negative")
@@ -107,9 +114,16 @@ class ValueBet:
         return f"{self.home_team} vs {self.away_team}: {pick}"
 
 
-def effective_odds(odds: float, bookmaker: str, commission: float) -> float:
+def commission_for(bookmaker: str, override: float | None = None) -> float:
+    """Commission charged on winnings: 0 for bookmakers, the exchange's rate (or ``override``) otherwise."""
+    if bookmaker not in EXCHANGE_COMMISSION:
+        return 0.0
+    return EXCHANGE_COMMISSION[bookmaker] if override is None else override
+
+
+def effective_odds(odds: float, bookmaker: str, commission: float | None = None) -> float:
     """Exchange winnings are reduced by the commission."""
-    return 1.0 + (odds - 1.0) * (1.0 - commission) if bookmaker == EXCHANGE else odds
+    return 1.0 + (odds - 1.0) * (1.0 - commission_for(bookmaker, commission))
 
 
 def shrunk_kelly(

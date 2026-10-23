@@ -39,7 +39,7 @@ def register(commands: argparse._SubParsersAction) -> None:
     )
     add_database(fetch)
     fetch.add_argument("--snapshot-dir", default=DEFAULT_SNAPSHOT_DIR)
-    fetch.add_argument("--manifest-dir", default="data/snapshots")
+    fetch.add_argument("--manifest-dir", default="data/manifests")
     fetch.set_defaults(handler=run_fetch)
 
 

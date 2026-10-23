@@ -217,6 +217,14 @@ class Ledger:
         )
 
     # -- reading ------------------------------------------------------------
+    def has_open_bet(self, kind: str, match_id: str, market: str, selection: str) -> bool:
+        row = self.db.connection.execute(
+            "SELECT 1 FROM bets WHERE kind = ? AND match_id = ? AND market = ? AND selection = ? "
+            "AND result IS NULL",
+            (kind, match_id, market, selection),
+        ).fetchone()
+        return row is not None
+
     def bets(self, *, kind: str | None = None, open_only: bool = False) -> list[BetRow]:
         query = "SELECT * FROM bets"
         clauses, params = [], []

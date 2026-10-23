@@ -21,3 +21,6 @@ outputs/
 .env
 # Secrets
 *.token
+
+# Generated ingestion manifests
+data/manifests/

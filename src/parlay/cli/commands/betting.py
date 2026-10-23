@@ -10,12 +10,11 @@ from pathlib import Path
 
 from parlay.betting import Ledger, ValueConfig, find_value_bets, run_value_backtest
 from parlay.betting.reference import REFERENCE_POLICIES
-from parlay.betting.value import MARKET_KINDS, ValueBet
+from parlay.betting.value import MARKET_KINDS, ValueBet, commission_for
 from parlay.cli._common import DEFAULT_SNAPSHOT_DIR, add_database, iso_date
 from parlay.cli.render import table
 from parlay.data.database import ResearchDatabase
 from parlay.data.loaders import load_football_data_fixtures
-from parlay.data.odds_columns import EXCHANGE
 from parlay.data.sources import FOOTBALL_DATA_LEAGUES, acquire_csv
 from parlay.evaluation.serialization import write_json, write_rows
 
@@ -62,7 +61,12 @@ def _add_value_options(parser: argparse.ArgumentParser) -> None:
     )
     group.add_argument("--min-odds", type=float, default=1.15)
     group.add_argument("--max-odds", type=float, default=10.0)
-    group.add_argument("--commission", type=float, default=0.05, help="exchange commission (default: 0.05)")
+    group.add_argument(
+        "--commission",
+        type=float,
+        default=None,
+        help="exchange commission (default: Betfair 0.05, Matchbook 0.02)",
+    )
     group.add_argument("--kelly-fraction", type=float, default=0.25)
     group.add_argument("--max-stake", type=float, default=0.02, help="bankroll cap per bet (default: 0.02)")
     group.add_argument(
@@ -91,6 +95,20 @@ def _value_config(args: argparse.Namespace) -> ValueConfig:
 
 
 def register(commands: argparse._SubParsersAction) -> None:
+    daily = commands.add_parser(
+        "daily",
+        help="daily routine: results, odds sync, CLV/settlement, value bets (paper), report",
+    )
+    add_database(daily)
+    daily.add_argument("--league", nargs="+", default=["E0", "E1"], help="football-data division codes")
+    daily.add_argument("--books", default=os.environ.get("PARLAY_BOOKS"), help="bookmakers you can bet with")
+    daily.add_argument("--min-ev", type=float, default=0.02)
+    daily.add_argument("--bankroll", type=float, default=1000.0)
+    daily.add_argument("--days", type=int, default=3, help="value bets for matches within this many days")
+    daily.add_argument("--skip-results", action="store_true", help="do not download current-season results")
+    daily.add_argument("--no-paper", action="store_true", help="do not log value bets as paper bets")
+    daily.set_defaults(handler=run_daily)
+
     odds = commands.add_parser("odds", help="download upcoming fixtures and prices")
     odds_commands = odds.add_subparsers(dest="odds_command", required=True, metavar="<action>")
     sync = odds_commands.add_parser("sync", help="store the latest prices for upcoming matches")
@@ -138,7 +156,7 @@ def register(commands: argparse._SubParsersAction) -> None:
     add.add_argument("--odds", type=float, help="price actually taken (default: the quoted price)")
     add.add_argument("--paper", action="store_true", help="record as a paper bet (default: real)")
     add.add_argument(
-        "--commission", type=float, default=None, help="exchange commission (default: 0.05 on Betfair)"
+        "--commission", type=float, default=None, help="exchange commission (default: per exchange)"
     )
     manual = add.add_argument_group("manual entry (without a key)")
     manual.add_argument("--match-id")
@@ -273,16 +291,19 @@ def run_value(args: argparse.Namespace) -> int:
     if config.reference != "pinnacle" or any(bet.reference != "Pinnacle" for bet in bets):
         print("\n" + LOW_CONFIDENCE.format(ref=config.reference))
     if args.paper:
-        recorded = sum(
-            ledger.record_value_bet(
-                bet,
-                kind="paper",
-                stake=max(bet.stake_fraction * args.bankroll, 0.01),
-                commission=config.exchange_commission if bet.bookmaker == EXCHANGE else 0.0,
+        recorded = 0
+        for bet in bets:
+            if ledger.has_open_bet("paper", bet.match_id, bet.market, bet.selection):
+                continue  # one paper bet per selection: re-runs after price moves must not double count
+            recorded += (
+                ledger.record_value_bet(
+                    bet,
+                    kind="paper",
+                    stake=max(bet.stake_fraction * args.bankroll, 0.01),
+                    commission=commission_for(bet.bookmaker, config.exchange_commission),
+                )
+                is not None
             )
-            is not None
-            for bet in bets
-        )
         print(f"\nRecorded {recorded} new paper bets.")
     if args.output:
         write_rows([{"key": bet.key, **asdict(bet)} for bet in bets], args.output)
@@ -297,11 +318,7 @@ def run_bets_add(args: argparse.Namespace) -> int:
     if args.key:
         candidate = ledger.candidate(args.key)
         candidate["key"] = args.key
-        commission = (
-            args.commission
-            if args.commission is not None
-            else (0.05 if candidate["bookmaker"] == EXCHANGE else 0.0)
-        )
+        commission = commission_for(candidate["bookmaker"], args.commission)
         bet_id = ledger.record_value_bet(
             candidate, kind=kind, stake=args.stake, odds=args.odds, commission=commission
         )
@@ -314,9 +331,7 @@ def run_bets_add(args: argparse.Namespace) -> int:
         if missing:
             raise SystemExit(f"without a key, provide --{' --'.join(m.replace('_', '-') for m in missing)}")
         match = next((m for m in database.load_matches() if m.match_id == args.match_id), None)
-        commission = (
-            args.commission if args.commission is not None else (0.05 if args.bookmaker == EXCHANGE else 0.0)
-        )
+        commission = commission_for(args.bookmaker, args.commission)
         bet_id = ledger.record(
             kind=kind,
             match_id=args.match_id,
@@ -456,4 +471,69 @@ def run_backtest_value(args: argparse.Namespace) -> int:
     print(f"Artifacts written to {args.output_dir}/")
     if config.reference != "pinnacle":
         print(LOW_CONFIDENCE.format(ref=config.reference))
+    return 0
+
+
+def run_daily(args: argparse.Namespace) -> int:
+    """Chain the daily commands; The Odds API is used when THE_ODDS_API_KEY is set."""
+    from parlay.cli import main as cli_main
+    from parlay.data.loaders import season_for
+    from parlay.data.sources import FOOTBALL_DATA_LEAGUES as LEAGUES
+
+    database = ["--database", args.database]
+    season = int(season_for(datetime.now(timezone.utc).date())[:4])
+    steps: list[tuple[str, list[str]]] = []
+    if not args.skip_results:
+        steps.append(
+            (
+                "Results and closing prices",
+                [
+                    "fetch",
+                    "--league",
+                    *args.league,
+                    "--from-season",
+                    str(season),
+                    "--to-season",
+                    str(season),
+                    *database,
+                ],
+            )
+        )
+    steps.append(
+        ("Prices: football-data fixtures.csv", ["odds", "sync", "--league", *args.league, *database])
+    )
+    competitions = [LEAGUES[code] for code in args.league if code in LEAGUES]
+    if os.environ.get("THE_ODDS_API_KEY"):
+        steps.append(
+            (
+                "Prices: The Odds API (Pinnacle)",
+                ["odds", "sync", "--source", "the-odds-api", "--competition", *competitions, *database],
+            )
+        )
+    else:
+        print("THE_ODDS_API_KEY is not set: no Pinnacle reference, so few or no value bets will be found.")
+    steps.append(("Closing-line value and settlement", ["bets", "update", *database]))
+    value = [
+        "value",
+        "--days",
+        str(args.days),
+        "--min-ev",
+        str(args.min_ev),
+        "--bankroll",
+        str(args.bankroll),
+    ]
+    if args.books:
+        value += ["--books", args.books]
+    if not args.no_paper:
+        value.append("--paper")
+    steps.append(("Value bets", [*value, *database]))
+    steps.append(("Paper-trading report", ["bets", "report", "--kind", "paper", *database]))
+    for title, argv in steps:
+        print(f"\n=== {title} ===")
+        try:
+            cli_main(argv)
+        except (OSError, SystemExit) as exc:
+            if isinstance(exc, SystemExit) and exc.code in (0, None):
+                continue
+            print(f"step failed: {exc}")
     return 0

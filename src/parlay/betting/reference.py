@@ -11,7 +11,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from parlay.data.odds_columns import EXCHANGE, MARKET_AVG, PSEUDO_BOOKMAKERS
+from parlay.data.odds_columns import EXCHANGE, EXCHANGES, MARKET_AVG, PSEUDO_BOOKMAKERS
 from parlay.prediction.markets import de_vig
 
 REFERENCE_POLICIES = ("auto", "pinnacle", "exchange", "consensus")
@@ -60,7 +60,7 @@ def fair_price(
         books = [
             prices
             for book, prices in quotes.items()
-            if book not in PSEUDO_BOOKMAKERS and book != EXCHANGE and _complete(prices, selections)
+            if book not in PSEUDO_BOOKMAKERS and book not in EXCHANGES and _complete(prices, selections)
         ]
         if len(books) >= MIN_CONSENSUS_BOOKS:
             implied = {s: sum(1.0 / b[s] for b in books) / len(books) for s in selections}

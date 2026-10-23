@@ -128,3 +128,35 @@ def test_backtest_value_cli(tmp_path, database, capsys):
     assert main(["backtest-value", "--database", str(database), "--output-dir", str(out)]) == 0
     assert "4 bets on 4 matches" in capsys.readouterr().out
     assert (out / "bets.csv").exists() and (out / "metrics.json").exists()
+
+
+def test_paper_logging_records_each_selection_once(database, capsys):
+    kickoff = datetime(2030, 1, 5, 15, tzinfo=timezone.utc)
+    match_id = _seed_upcoming(database, kickoff)
+    argv = ["value", "--database", str(database), "--as-of", "2030-01-05T12:00", "--paper"]
+    assert main(argv) == 0
+    db = ResearchDatabase(str(database))  # the price moves and the engine runs again
+    db.insert_odds([OddsSnapshot(match_id, "Bet365", "1x2", s, p, kickoff - timedelta(hours=4))
+                    for s, p in zip(("home", "draw", "away"), (2.3, 3.3, 3.4), strict=True)])  # fmt: skip
+    db.close()
+    assert main(argv) == 0
+    assert "Recorded 0 new paper bets" in capsys.readouterr().out
+
+
+def test_daily_runs_every_step_and_reports(tmp_path, database, monkeypatch, capsys):
+    import parlay.cli.commands.betting as betting
+
+    fixtures = tmp_path / "fixtures.csv"
+    fixtures.write_text(FIXTURES, encoding="utf-8")
+    monkeypatch.setattr(betting, "acquire_csv", lambda url, directory: (fixtures, {}))
+    monkeypatch.delenv("THE_ODDS_API_KEY", raising=False)
+    assert main(["daily", "--database", str(database), "--skip-results", "--league", "E0"]) == 0
+    out = capsys.readouterr().out
+    for title in (
+        "Prices: football-data",
+        "Closing-line value and settlement",
+        "Value bets",
+        "Paper-trading report",
+    ):
+        assert title in out
+    assert "THE_ODDS_API_KEY is not set" in out

@@ -235,3 +235,13 @@ def test_value_backtest_settles_and_scores_against_closing():
     assert run_value_backtest(
         matches, odds, ValueConfig(bookmakers=("Bet365",)), start=date(2025, 1, 1)
     ).metrics == {"bets": 0.0}
+
+
+def test_exchange_commissions_and_consensus_excludes_exchanges():
+    from parlay.betting.value import commission_for
+
+    assert commission_for("Matchbook") == 0.02 and commission_for(EXCHANGE) == 0.05
+    assert commission_for("Bet365", 0.1) == 0.0 and commission_for("Matchbook", 0.0) == 0.0
+    assert effective_odds(3.0, "Matchbook") == pytest.approx(2.96)
+    quotes = {b: x12(2.0, 3.5, 4.0) for b in ("Bet365", "bwin", "Unibet")} | {"Matchbook": x12(9.0, 9.0, 9.0)}
+    assert fair_price(quotes, ("home", "draw", "away"), "consensus").books == 3

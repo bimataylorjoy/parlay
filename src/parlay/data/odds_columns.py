@@ -16,6 +16,9 @@ from .schemas import OddsSnapshot
 MARKET_MAX = "market_max"  # best price across the bookmakers football-data tracks
 MARKET_AVG = "market_avg"  # average price across them
 EXCHANGE = "Betfair Exchange"
+# Typical commission on net winnings; override with --commission.
+EXCHANGE_COMMISSION = {EXCHANGE: 0.05, "Matchbook": 0.02, "Smarkets": 0.02}
+EXCHANGES = frozenset(EXCHANGE_COMMISSION)
 PSEUDO_BOOKMAKERS = frozenset({MARKET_MAX, MARKET_AVG})
 
 
