@@ -17,12 +17,12 @@ def database(tmp_path):
 
 
 def test_odds_sync_from_football_data_and_the_odds_api(tmp_path, database, monkeypatch, capsys):
-    import parlay.cli.commands.betting as betting
+    import parlay.data.odds_sync as odds_sync
     import parlay.data.the_odds_api as api
 
     fixtures = tmp_path / "fixtures.csv"
     fixtures.write_text(FIXTURES, encoding="utf-8")
-    monkeypatch.setattr(betting, "acquire_csv", lambda url, directory: (fixtures, {}))
+    monkeypatch.setattr(odds_sync, "acquire_csv", lambda url, directory: (fixtures, {}))
     assert main(["odds", "sync", "--database", str(database)]) == 0
     assert "no Pinnacle prices" in capsys.readouterr().out
 
@@ -144,11 +144,11 @@ def test_paper_logging_records_each_selection_once(database, capsys):
 
 
 def test_daily_runs_every_step_and_reports(tmp_path, database, monkeypatch, capsys):
-    import parlay.cli.commands.betting as betting
+    import parlay.data.odds_sync as odds_sync
 
     fixtures = tmp_path / "fixtures.csv"
     fixtures.write_text(FIXTURES, encoding="utf-8")
-    monkeypatch.setattr(betting, "acquire_csv", lambda url, directory: (fixtures, {}))
+    monkeypatch.setattr(odds_sync, "acquire_csv", lambda url, directory: (fixtures, {}))
     monkeypatch.delenv("THE_ODDS_API_KEY", raising=False)
     assert main(["daily", "--database", str(database), "--skip-results", "--league", "E0"]) == 0
     out = capsys.readouterr().out

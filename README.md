@@ -107,6 +107,7 @@ export PARLAY_BOOKS="Bet365,William Hill"         # bookmakers you can use
 parlay odds sync                                   # football-data fixtures.csv (free, no key)
 parlay odds sync --source the-odds-api             # Pinnacle reference
 parlay daily                                       # all of the below in one go
+parlay watch                                       # re-price each kickoff slot after lineups are out
 parlay value --paper                               # value bets vs the fair Pinnacle price
 parlay bets add vb:1a2b3c4d --stake 10 --odds 2.12
 parlay bets update && parlay bets report           # closing-line value, yield, verdict
@@ -217,6 +218,7 @@ Run `parlay <command> --help` for every option.
 | `backtest-value` | replay the value engine on historical football-data prices |
 | `anchor-test` | test whether the goal model or other features add information to the Pinnacle price |
 | `daily` | results, odds syncs, CLV/settlement, value bets (paper) and report in one go |
+| `watch` | re-price each kickoff slot ~50 min before kickoff (after lineups); optional Telegram alerts |
 | `sync-sportmonks` / `predict-sportmonks` | fixtures, O/U 2.5 prices and team news from Sportmonks (`SPORTMONKS_API_TOKEN`) |
 
 Shared model options: `--model {poisson,dixon_coles,negative_binomial}`,

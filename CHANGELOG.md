@@ -11,6 +11,9 @@
 - Free odds feeds: football-data `fixtures.csv` and The Odds API (Pinnacle in
   region `eu`). CLI: `odds sync`, `value`, `bets add|update|report|list`,
   `backtest-value`.
+- `parlay watch`: lineup-window re-pricing of each kickoff slot (The Odds API
+  synced only for the competitions in the slot, once per slot, with a credit
+  reserve), paper logging and optional Telegram notifications.
 - `parlay daily` routine and `parlay anchor-test` (market-anchored adjustment,
   walk-forward by season). Result on 2022-26: the goal model and simple
   features add no information beyond Pinnacle (model weight negative every

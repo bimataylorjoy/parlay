@@ -86,6 +86,46 @@ of the fair price (Baker & McHale, 2013), capped by `--max-stake`. Exchange
 prices are reduced by `--commission`. Edges above `--max-ev` (30%) are
 discarded as stale or erroneous prices.
 
+## Lineup window: `parlay watch`
+
+Confirmed lineups appear about an hour before kickoff and the Pinnacle price
+reacts within minutes; slower bookmakers may keep the old price for a while.
+`parlay watch` re-prices every kickoff slot `--lead` minutes (default 50)
+before kickoff: it syncs The Odds API only for the competitions playing in
+that slot, looks for value in those matches, logs paper bets and notifies
+you. Each slot is processed once, and syncing stops below `--credit-reserve`
+remaining credits.
+
+```bash
+parlay watch --next                  # upcoming slots and their credit cost (no API calls)
+parlay watch                         # run until stopped (Ctrl+C), or --until 2030-01-06T00:00
+parlay watch --once                  # process due slots and exit — for cron every 5 minutes
+```
+
+A typical weekend of EPL + Championship is 6–10 slots, 2–4 credits each.
+
+**Telegram notifications (optional, free).** Create a bot with @BotFather,
+send it a message, read your chat id from
+`https://api.telegram.org/bot<TOKEN>/getUpdates`, then:
+
+```bash
+export TELEGRAM_BOT_TOKEN=123456:ABC...
+export TELEGRAM_CHAT_ID=123456789
+```
+
+**Cron** (keeps running after reboots; keep secrets out of the repository):
+
+```bash
+# ~/.config/parlay/env  (chmod 600)
+export THE_ODDS_API_KEY=...
+export PARLAY_BOOKS="1xBet,Pinnacle"
+export TELEGRAM_BOT_TOKEN=... TELEGRAM_CHAT_ID=...
+
+# crontab -e
+*/5 * * * * cd ~/parlay && . ~/.config/parlay/env && .venv/bin/parlay watch --once >> ~/parlay-watch.log 2>&1
+30 7 * * *  cd ~/parlay && . ~/.config/parlay/env && .venv/bin/parlay daily >> ~/parlay-daily.log 2>&1
+```
+
 ## Reading the report
 
 * **CLV** = taken price × fair closing probability − 1. Its standard error
@@ -122,9 +162,6 @@ the plain Pinnacle price**, and any new feature must pass `anchor-test`
 
 ## Next steps
 
-1. More odds snapshots per day, closer to kickoff (fresher prices and a
-   better closing proxy). `parlay daily` twice a day uses ~240 of the 500
-   monthly The Odds API credits for two leagues.
-2. New information for `anchor-test`: football-data added expected goals
+1. New information for `anchor-test`: football-data added expected goals
    (HxG/AxG) in 2026-27, and confirmed lineups arrive ~60 minutes before
    kickoff. Both need a season or more of history before they can be tested.

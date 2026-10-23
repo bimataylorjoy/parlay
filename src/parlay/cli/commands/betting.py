@@ -14,11 +14,9 @@ from parlay.betting.value import MARKET_KINDS, ValueBet, commission_for
 from parlay.cli._common import DEFAULT_SNAPSHOT_DIR, add_database, iso_date
 from parlay.cli.render import table
 from parlay.data.database import ResearchDatabase
-from parlay.data.loaders import load_football_data_fixtures
-from parlay.data.sources import FOOTBALL_DATA_LEAGUES, acquire_csv
+from parlay.data.odds_sync import sync_football_data_fixtures, sync_the_odds_api
 from parlay.evaluation.serialization import write_json, write_rows
 
-FIXTURES_URL = "https://www.football-data.co.uk/fixtures.csv"
 LOW_CONFIDENCE = (
     "Warning: reference '{ref}' is not Pinnacle. In the 2024-26 backtest, bets priced against the "
     "Betfair Exchange snapshot or the consensus had negative or zero closing-line value; "
@@ -108,6 +106,30 @@ def register(commands: argparse._SubParsersAction) -> None:
     daily.add_argument("--skip-results", action="store_true", help="do not download current-season results")
     daily.add_argument("--no-paper", action="store_true", help="do not log value bets as paper bets")
     daily.set_defaults(handler=run_daily)
+
+    watch = commands.add_parser(
+        "watch",
+        help="re-price every kickoff slot ~50 min before kickoff (after lineups) and report value bets",
+    )
+    add_database(watch)
+    _add_value_options(watch)
+    watch.add_argument("--competition", nargs="+", default=["EPL", "Championship"])
+    watch.add_argument("--lead", type=int, default=50, help="minutes before kickoff to sync (default: 50)")
+    watch.add_argument("--min-lead", type=int, default=10, help="skip slots closer than this to kickoff")
+    watch.add_argument("--regions", default="eu")
+    watch.add_argument("--api-markets", default="h2h,totals")
+    watch.add_argument("--credit-reserve", type=int, default=20, help="stop syncing below this many credits")
+    watch.add_argument("--bankroll", type=float, default=1000.0)
+    watch.add_argument("--no-paper", action="store_true", help="do not log value bets as paper bets")
+    watch.add_argument("--notify-empty", action="store_true", help="also notify slots without value bets")
+    watch.add_argument(
+        "--once", action="store_true", help="process due slots and exit (for cron every 5 min)"
+    )
+    watch.add_argument(
+        "--next", action="store_true", help="show upcoming slots and credit estimate, then exit"
+    )
+    watch.add_argument("--until", type=_utc_datetime, help="stop the loop at this UTC time")
+    watch.set_defaults(handler=run_watch)
 
     odds = commands.add_parser("odds", help="download upcoming fixtures and prices")
     odds_commands = odds.add_subparsers(dest="odds_command", required=True, metavar="<action>")
@@ -212,47 +234,34 @@ def _open_database(path: str) -> ResearchDatabase:
 def run_odds_sync(args: argparse.Namespace) -> int:
     now = datetime.now(timezone.utc)
     database = ResearchDatabase(args.database)
-    if args.source == "football-data":
-        unknown = [code for code in args.league if code not in FOOTBALL_DATA_LEAGUES]
-        if unknown:
-            raise SystemExit(f"unknown division codes {unknown}; known: {', '.join(FOOTBALL_DATA_LEAGUES)}")
-        snapshot, _ = acquire_csv(FIXTURES_URL, args.snapshot_dir)
-        leagues = {code: FOOTBALL_DATA_LEAGUES[code] for code in args.league}
-        matches, odds = load_football_data_fixtures(snapshot, captured_at=now, leagues=leagues)
-        note = (
-            "football-data fixtures.csv has no Pinnacle prices; "
-            "also sync --source the-odds-api for a sharp reference."
-        )
-    else:
-        from parlay.data.the_odds_api import SPORT_KEYS, fetch_odds, parse_events
-
-        api_key = args.api_key or os.environ.get("THE_ODDS_API_KEY")
-        if not api_key:
-            raise SystemExit("Set THE_ODDS_API_KEY (free at https://the-odds-api.com) or pass --api-key")
-        matches, odds = [], []
-        quota = None
-        for competition in args.competition:
-            if competition not in SPORT_KEYS:
-                raise SystemExit(f"unknown competition {competition!r}; known: {', '.join(SPORT_KEYS)}")
-            events, quota = fetch_odds(
-                api_key, SPORT_KEYS[competition], regions=args.regions, markets=args.api_markets
+    try:
+        if args.source == "football-data":
+            result = sync_football_data_fixtures(
+                database, args.league, now=now, snapshot_dir=args.snapshot_dir
             )
-            upcoming = [
-                e for e in events if datetime.fromisoformat(e["commence_time"].replace("Z", "+00:00")) > now
-            ]
-            found_matches, found_odds = parse_events(upcoming, competition, retrieved_at=now)
-            matches += found_matches
-            odds += found_odds
-        note = f"The Odds API credits remaining: {quota.remaining}" if quota else ""
-    database.insert_future_matches(matches)
-    database.insert_odds(odds)
-    database.close()
-    books = sorted({o.bookmaker for o in odds})
-    print(f"Stored {len(matches)} upcoming matches and {len(odds)} prices from {len(books)} bookmakers.")
-    if books:
-        print("Bookmakers: " + ", ".join(books))
-    if note:
-        print(note)
+            note = (
+                "football-data fixtures.csv has no Pinnacle prices; "
+                "also sync --source the-odds-api for a sharp reference."
+            )
+        else:
+            api_key = args.api_key or os.environ.get("THE_ODDS_API_KEY")
+            if not api_key:
+                raise SystemExit("Set THE_ODDS_API_KEY (free at https://the-odds-api.com) or pass --api-key")
+            result = sync_the_odds_api(
+                database, api_key, args.competition, now=now, regions=args.regions, markets=args.api_markets
+            )
+            note = f"The Odds API credits remaining: {result.credits_remaining}"
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    finally:
+        database.close()
+    print(
+        f"Stored {result.matches} upcoming matches and {result.prices} prices "
+        f"from {len(result.bookmakers)} bookmakers."
+    )
+    if result.bookmakers:
+        print("Bookmakers: " + ", ".join(result.bookmakers))
+    print(note)
     return 0
 
 
@@ -612,4 +621,82 @@ def run_anchor_test(args: argparse.Namespace) -> int:
             else "no reliable information beyond the Pinnacle price; keep pricing bets against the market."
         )
     )
+    return 0
+
+
+def run_watch(args: argparse.Namespace) -> int:
+    import time
+
+    from parlay.betting.watch import WatchConfig, Watcher, format_slot_message
+    from parlay.data.odds_sync import credit_cost
+    from parlay.notify import notifier_from_env
+
+    config = WatchConfig(
+        competitions=tuple(args.competition),
+        lead_minutes=args.lead,
+        min_lead_minutes=args.min_lead,
+        regions=args.regions,
+        markets=args.api_markets,
+        credit_reserve=args.credit_reserve,
+        bankroll=args.bankroll,
+        paper=not args.no_paper,
+        notify_empty=args.notify_empty,
+        value=_value_config(args),
+    )
+    api_key = os.environ.get("THE_ODDS_API_KEY", "")
+    if not api_key and not args.next:
+        raise SystemExit("Set THE_ODDS_API_KEY: the watcher needs Pinnacle prices from The Odds API")
+    database = _open_database(args.database)
+    notifier = notifier_from_env()
+    watcher = Watcher(database, api_key, config, notifier=notifier)
+    now = datetime.now(timezone.utc)
+
+    if args.next:
+        slots = [s for s in watcher.slots(now) if s.kickoff <= now + timedelta(days=7)]
+        rows = [
+            [
+                f"{s.kickoff:%a %d %b %H:%M}",
+                f"{s.trigger(config.lead_minutes):%a %H:%M}",
+                ", ".join(s.competitions),
+                str(len(s.matches)),
+                str(credit_cost(config.markets, config.regions, len(s.competitions))),
+            ]
+            for s in slots
+        ]
+        print(table(["kickoff (UTC)", "sync at", "competitions", "matches", "credits"], rows, "lllrr"))
+        total = sum(int(r[-1]) for r in rows)
+        remaining = watcher.last_known_credits()
+        print(
+            f"\n{len(rows)} slots in the next 7 days ≈ {total} credits "
+            f"(last known remaining: {remaining if remaining is not None else 'unknown'})."
+        )
+        database.close()
+        return 0
+
+    print(
+        f"Watching {', '.join(config.competitions)}: sync {config.lead_minutes} min before each kickoff; "
+        f"notifications: {'Telegram' if notifier else 'terminal only'}."
+    )
+    if not watcher.slots(now):
+        print(
+            "No upcoming kickoffs stored; run `parlay odds sync --source the-odds-api` "
+            "(or `parlay daily`) first."
+        )
+    try:
+        while True:
+            now = datetime.now(timezone.utc)
+            for report in watcher.run_due(now):
+                print(f"\n[{now:%Y-%m-%d %H:%M} UTC] {report.status}")
+                print(format_slot_message(report, config.bankroll))
+            if args.once or (args.until and now >= args.until):
+                break
+            upcoming = watcher.next_trigger(now)
+            wait = 900.0 if upcoming is None else (upcoming - now).total_seconds()
+            if args.until:
+                wait = min(wait, max(0.0, (args.until - now).total_seconds()))
+            time.sleep(max(30.0, min(wait, 900.0)))
+    except KeyboardInterrupt:
+        print("\nStopped.")
+    finally:
+        database.close()
     return 0
