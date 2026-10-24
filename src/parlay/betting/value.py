@@ -39,7 +39,7 @@ MARKET_KINDS = tuple(SELECTIONS)
 
 @dataclass(frozen=True, slots=True)
 class ValueConfig:
-    reference: str = "auto"
+    reference: str = "pinnacle"  # only Pinnacle-referenced bets showed positive CLV in backtests
     bookmakers: tuple[str, ...] | None = None  # where you can bet; None = every real bookmaker
     markets: tuple[str, ...] = MARKET_KINDS
     min_ev: float = 0.02
@@ -147,23 +147,32 @@ def shrunk_kelly(
     return min(full * shrink * fraction, max_stake)
 
 
+SNAPSHOT_TOLERANCE = timedelta(minutes=10)
+
+
 def latest_quotes(
     snapshots: Iterable[OddsSnapshot], as_of: datetime
 ) -> dict[str, dict[str, dict[str, float]]]:
-    """``market -> bookmaker -> selection -> odds`` from each bookmaker's latest pre-match snapshot."""
-    latest: dict[tuple[str, str], datetime] = {}
-    rows: list[OddsSnapshot] = []
+    """``market -> bookmaker -> selection -> odds`` from each bookmaker's latest pre-match snapshot.
+
+    Each selection takes its latest price; selections captured more than
+    ``SNAPSHOT_TOLERANCE`` before the bookmaker's latest update of that market
+    are dropped as stale, so a market is never assembled from different days.
+    """
+    latest_row: dict[tuple[str, str, str], OddsSnapshot] = {}
     for row in snapshots:
         if row.is_closing or row.captured_at > as_of:
             continue
-        rows.append(row)
-        key = (row.market, row.bookmaker)
-        if key not in latest or row.captured_at > latest[key]:
-            latest[key] = row.captured_at
+        key = (row.market, row.bookmaker, row.selection)
+        if key not in latest_row or row.captured_at > latest_row[key].captured_at:
+            latest_row[key] = row
+    newest: dict[tuple[str, str], datetime] = {}
+    for (market, book, _), row in latest_row.items():
+        newest[(market, book)] = max(newest.get((market, book), row.captured_at), row.captured_at)
     quotes: dict[str, dict[str, dict[str, float]]] = defaultdict(lambda: defaultdict(dict))
-    for row in rows:
-        if row.captured_at == latest[(row.market, row.bookmaker)]:
-            quotes[row.market][row.bookmaker][row.selection] = row.odds
+    for (market, book, selection), row in latest_row.items():
+        if newest[(market, book)] - row.captured_at <= SNAPSHOT_TOLERANCE:
+            quotes[market][book][selection] = row.odds
     return quotes
 
 

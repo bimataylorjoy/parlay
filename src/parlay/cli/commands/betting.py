@@ -519,6 +519,15 @@ def run_backtest_value(args: argparse.Namespace) -> int:
     m = result.metrics
     if not m.get("bets"):
         print("No value bets found for this configuration and period.")
+        completed = {mt.match_id for mt in matches if mt.home_goals is not None}
+        known = {o.bookmaker for o in odds if o.match_id in completed}
+        venues = set(config.bookmakers or ()) - {"Pinnacle"}  # the reference is never a betting venue
+        if config.bookmakers and not venues & known:
+            print(
+                f"None of your bookmakers ({', '.join(config.bookmakers)}) appear in the historical prices "
+                f"(available: {', '.join(sorted(known - {'market_max', 'market_avg'}))}). "
+                'Run with --books "" to test every bookmaker.'
+            )
         return 0
     print(
         f"{m['bets']:.0f} bets on {m['matches']:.0f} matches · mean odds {m['mean_odds']:.2f} · "

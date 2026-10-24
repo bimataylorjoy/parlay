@@ -20,13 +20,15 @@ from typing import Any
 from urllib.error import URLError
 
 from parlay.betting import Ledger, ValueConfig, find_value_bets
-from parlay.betting.tickets import build_ticket, price_leg
-from parlay.betting.value import ValueBet, commission_for
+from parlay.betting.tickets import Ticket, build_ticket, price_leg
+from parlay.betting.value import ValueBet, commission_for, latest_quotes
 from parlay.betting.watch import SlotReport, kickoff_slots
 from parlay.data.database import ResearchDatabase
+from parlay.data.odds_columns import EXCHANGES
+from parlay.data.schemas import Match
 
 from .api import Buttons, TelegramAPI
-from .state import BotState
+from .state import BotState, SlipLeg
 from .texts import (
     HELP,
     WELCOME,
@@ -35,7 +37,9 @@ from .texts import (
     local_zone,
     min_stake,
     money,
+    pct,
     report_text,
+    short_when,
     ticket_card,
     value_card,
     when,
@@ -197,6 +201,7 @@ class ParlayBot:
                 "value": lambda: self.show_value(chat),
                 "value_all": lambda: self.show_value(chat, everything=True),
                 "slip": lambda: self.show_slip(chat),
+                "add": lambda: self.show_matches(chat),
                 "clear": lambda: self.clear_slip(chat),
                 "report": lambda: self.show_report(chat),
                 "next": lambda: self.show_schedule(chat),
@@ -216,6 +221,14 @@ class ParlayBot:
             self.add_to_slip(chat, arg)
         elif kind == "t":
             self.ask_ticket_stake(chat)
+        elif kind == "pg":
+            self.show_matches(chat, int(arg))
+        elif kind == "g":
+            self.show_picks(chat, arg)
+        elif kind == "k":
+            self.add_pick(chat, arg)
+        elif kind == "r":
+            self.remove_from_slip(chat, arg)
         elif kind == "tb":
             self.record_ticket(chat, float(arg), None)
         elif kind == "x":
@@ -329,74 +342,190 @@ class ParlayBot:
         self.record_bet(chat, key, stake, None, kind="paper")
 
     # -------------------------------------------------------------- slip
+    @property
+    def primary_book(self) -> str:
+        """The bookmaker used for legs picked by hand: the first of yours that is not the reference."""
+        for book in self.books or ():
+            if book != "Pinnacle" and book not in EXCHANGES:
+                return book
+        return "1xBet"
+
     def add_to_slip(self, chat: str, key: str) -> None:
         data = self._candidate(key)
-        current = [self._candidate(k) for k in self.state.slip(chat)]
-        if any(c["match_id"] == data["match_id"] for c in current):
-            self.send(chat, "Laga ini sudah ada di slip (satu tim per laga).", [[("🎟 Lihat slip", "m:slip")]])
-            return
-        self.state.add_to_slip(chat, key)
-        count = len(current) + 1
+        self._add_leg(chat, SlipLeg(data["match_id"], data["market"], data["selection"], data["bookmaker"]))
+
+    def _add_leg(self, chat: str, leg: SlipLeg) -> None:
+        new = self.state.add_leg(chat, leg)
+        count = len(self.state.slip(chat))
+        note = "" if new else " (pilihan untuk laga ini diganti — satu tim per laga)"
         self.send(
             chat,
-            f"➕ Ditambahkan ke slip parlay ({count} tim).",
-            [[("🎟 Lihat slip", "m:slip"), ("🗑 Kosongkan", "m:clear")]],
+            f"➕ Ditambahkan ke slip parlay: sekarang {count} tim{note}.",
+            [[("🎟 Lihat slip", "m:slip"), ("➕ Tambah laga lain", "m:add")]],
         )
 
-    def slip_ticket(self, chat: str) -> Any:
+    def _upcoming(self, days: int = 3) -> list[Match]:
         now = datetime.now(timezone.utc)
-        legs, books = [], []
-        for key in self.state.slip(chat):
-            data = self._candidate(key)
-            match = next((m for m in self.db.load_matches() if m.match_id == data["match_id"]), None)
+        return sorted(
+            (
+                m
+                for m in self.db.load_matches()
+                if m.home_goals is None and m.kickoff_at and now < m.kickoff_at <= now + timedelta(days=days)
+            ),
+            key=lambda m: (m.kickoff_at, m.match_id),
+        )
+
+    def slip_ticket(self, chat: str) -> tuple[Ticket | None, list[str]]:
+        """The slip as a ticket (None below two legs) and notes about legs that were dropped."""
+        now = datetime.now(timezone.utc)
+        matches = {m.match_id: m for m in self.db.load_matches()}
+        legs, books, notes = [], [], []
+        for leg in self.state.slip(chat):
+            match = matches.get(leg.match_id)
             if match is None or (match.kickoff_at and match.kickoff_at <= now):
-                self.state.remove_from_slip(chat, key)
+                self.state.remove_leg(chat, leg.match_id)
+                if match is not None:
+                    notes.append(f"{match.home_team} vs {match.away_team} sudah kickoff, dihapus dari slip.")
                 continue
-            books.append(data["bookmaker"])
-            legs.append(
-                price_leg(
+            try:
+                priced = price_leg(
                     match,
-                    data["market"],
-                    data["selection"],
+                    leg.market,
+                    leg.selection,
                     self.db.load_odds(match_id=match.match_id),
-                    bookmaker=data["bookmaker"],
+                    bookmaker=leg.bookmaker,
                     as_of=now,
                 )
-            )
+            except ValueError:
+                notes.append(
+                    f"{match.home_team} vs {match.away_team}: odds {leg.bookmaker} tidak tersedia lagi."
+                )
+                continue
+            legs.append(priced)
+            books.append(leg.bookmaker)
         if len(legs) < 2:
-            return None
-        return build_ticket(legs, max(set(books), key=books.count))
+            return None, notes
+        return build_ticket(legs, max(set(books), key=books.count)), notes
 
     def show_slip(self, chat: str) -> None:
-        count = len(self.state.slip(chat))
-        ticket = self.slip_ticket(chat) if count >= 2 else None
+        ticket, notes = self.slip_ticket(chat)
+        legs = self.state.slip(chat)
+        notes_text = "".join(f"\nℹ️ {esc(n)}" for n in notes)
         if ticket is None:
-            self.menu(
+            self.send(
                 chat,
-                f"🎟 Slip parlay berisi {len(self.state.slip(chat))} tim. Tambahkan minimal 2 value bet "
-                "dengan tombol <b>➕ Tambah ke parlay</b>.",
+                f"🎟 Slip parlay berisi {len(legs)} tim. Butuh minimal 2.\n"
+                "Tambahkan dari kartu value bet (<b>➕ Tambah ke parlay</b>) atau pilih laga mana saja."
+                + notes_text,
+                [[("➕ Tambah laga lain", "m:add"), ("🎯 Value bet", "m:value")], [("🏠 Menu", "m:menu")]],
             )
             return
-        buttons: Buttons = [[("🗑 Kosongkan slip", "m:clear")]]
-        if (ticket.expected_value or 0) > 0:
-            buttons.insert(0, [("✅ Saya pasang tiket ini", "t:")])
-        self.send(chat, ticket_card(ticket, self.state.bankroll(chat)), buttons)
+        ev = ticket.expected_value
+        buttons: Buttons = []
+        if ev is not None and ev > 0:
+            buttons.append([("✅ Saya pasang tiket ini", "t:")])
+            reason = ""
+        else:
+            buttons.append([("📝 Tetap catat (sudah saya pasang)", "t:")])
+            reason = "\n\n🔒 Tombol <b>Saya pasang</b> disembunyikan karena " + (
+                "EV tiket negatif. Hapus tim bertanda ⚠️ supaya EV membaik."
+                if ev is not None
+                else "EV tidak bisa dihitung: tim bertanda ❔ tidak punya harga Pinnacle untuk pasar itu. "
+                "Hapus atau ganti pilihannya."
+            )
+        removes = [(f"❌ Hapus {n}", f"r:{leg.match_id}") for n, leg in enumerate(ticket.legs, start=1)]
+        buttons += [removes[k : k + 4] for k in range(0, len(removes), 4)]
+        buttons.append([("➕ Tambah laga lain", "m:add"), ("🗑 Kosongkan", "m:clear")])
+        self.send(chat, ticket_card(ticket, self.state.bankroll(chat)) + reason + notes_text, buttons)
+
+    def show_matches(self, chat: str, page: int = 0) -> None:
+        taken = {leg.match_id for leg in self.state.slip(chat)}
+        matches = [m for m in self._upcoming() if m.match_id not in taken]
+        if not matches:
+            self.send(chat, "Tidak ada laga lain dalam 3 hari ke depan.", [[("🎟 Lihat slip", "m:slip")]])
+            return
+        per_page = 8
+        chunk = matches[page * per_page : (page + 1) * per_page]
+        buttons: Buttons = [
+            [(f"{short_when(m.kickoff_at)} · {m.home_team}–{m.away_team}", f"g:{m.match_id}")] for m in chunk
+        ]
+        nav = []
+        if page > 0:
+            nav.append(("⬅️ Sebelumnya", f"pg:{page - 1}"))
+        if (page + 1) * per_page < len(matches):
+            nav.append(("Berikutnya ➡️", f"pg:{page + 1}"))
+        if nav:
+            buttons.append(nav)
+        buttons.append([("🎟 Lihat slip", "m:slip")])
+        self.send(chat, f"📋 Pilih laga ({len(matches)} laga, 3 hari ke depan):", buttons)
+
+    def show_picks(self, chat: str, match_id: str) -> None:
+        match = next((m for m in self._upcoming() if m.match_id == match_id), None)
+        if match is None:
+            self.send(chat, "Laga ini sudah mulai atau tidak ditemukan.", [[("📋 Pilih laga lain", "m:add")]])
+            return
+        odds = self.db.load_odds(match_id=match_id)
+        now = datetime.now(timezone.utc)
+        book = self.primary_book
+        quotes = latest_quotes(odds, now)
+        totals = sorted(
+            (k for k, books in quotes.items() if k.startswith("totals_") and book in books),
+            key=lambda k: abs(float(k.split("_")[1]) - 2.5),
+        )
+        picks = [("1x2", "home"), ("1x2", "draw"), ("1x2", "away")]
+        if totals:
+            picks += [(totals[0], "over"), (totals[0], "under")]
+        buttons: Buttons = []
+        for market, selection in picks:
+            try:
+                leg = price_leg(match, market, selection, odds, bookmaker=book, as_of=now)
+            except ValueError:
+                continue
+            pick, _ = describe_bet(match.home_team, match.away_team, market, selection)
+            ev = f"EV {pct(leg.expected_value, signed=True)}" if leg.expected_value is not None else "EV ?"
+            buttons.append([(f"{pick} · {leg.odds:.2f} · {ev}", f"k:{match_id}:{market}:{selection}")])
+        if not buttons:
+            self.send(
+                chat, f"Belum ada odds {esc(book)} untuk laga ini.", [[("📋 Pilih laga lain", "m:add")]]
+            )
+            return
+        buttons.append([("📋 Pilih laga lain", "m:add"), ("🎟 Lihat slip", "m:slip")])
+        self.send(
+            chat,
+            f"⚽ <b>{esc(match.home_team)} vs {esc(match.away_team)}</b>\n🕒 {when(match.kickoff_at)}\n\n"
+            f"Pilih taruhan untuk slip ({esc(book)}). EV negatif = odds di bawah harga wajar Pinnacle; "
+            "EV ? = Pinnacle tidak punya harga untuk pasar itu.",
+            buttons,
+        )
+
+    def add_pick(self, chat: str, arg: str) -> None:
+        match_id, market, selection = arg.split(":")
+        self._add_leg(chat, SlipLeg(match_id, market, selection, self.primary_book))
+
+    def remove_from_slip(self, chat: str, match_id: str) -> None:
+        self.state.remove_leg(chat, match_id)
+        self.show_slip(chat)
 
     def clear_slip(self, chat: str) -> None:
         self.state.clear_slip(chat)
         self.menu(chat, "🗑 Slip parlay dikosongkan.")
 
     def ask_ticket_stake(self, chat: str) -> None:
-        ticket = self.slip_ticket(chat)
+        ticket, _ = self.slip_ticket(chat)
         if ticket is None:
             self.menu(chat, "Slip kosong atau kurang dari 2 tim.")
             return
         suggested = ticket.stake_fraction() * self.state.bankroll(chat)
         self.pending[chat] = {"type": "ticket"}
         amounts = quick_amounts(suggested)
+        hint = (
+            f"Saran {money(suggested)}."
+            if suggested > 0
+            else "EV tiket tidak positif, jadi tidak ada saran taruhan."
+        )
         self.send(
             chat,
-            f"💬 Berapa taruhan untuk tiket @ {ticket.combined_odds:.2f}? Saran {money(suggested)}.\n"
+            f"💬 Berapa taruhan untuk tiket @ {ticket.combined_odds:.2f}? {hint}\n"
             "Ketik nominal atau tekan tombol. Kalau total odds di bookie berbeda, "
             "ketik <code>20rb@7,9</code>.",
             [[(money(a), f"tb:{a:.0f}") for a in amounts], [("Batal", "x:")]],
@@ -404,7 +533,7 @@ class ParlayBot:
 
     def record_ticket(self, chat: str, stake: float, odds: float | None) -> None:
         self.pending.pop(chat, None)
-        ticket = self.slip_ticket(chat)
+        ticket, _ = self.slip_ticket(chat)
         if ticket is None:
             self.menu(chat, "Slip kosong atau kurang dari 2 tim.")
             return
@@ -412,7 +541,8 @@ class ParlayBot:
         self.state.clear_slip(chat)
         self.menu(
             chat,
-            f"✅ Tiket parlay #{ticket_id} dicatat: {money(stake)} @ {odds or ticket.combined_odds:.2f}.",
+            f"✅ Tiket parlay #{ticket_id} ({len(ticket.legs)} tim) dicatat: {money(stake)} @ "
+            f"{odds or ticket.combined_odds:.2f}. Hasilnya akan saya kabari otomatis.",
         )
 
     # ----------------------------------------------------- other screens

@@ -245,3 +245,18 @@ def test_exchange_commissions_and_consensus_excludes_exchanges():
     assert effective_odds(3.0, "Matchbook") == pytest.approx(2.96)
     quotes = {b: x12(2.0, 3.5, 4.0) for b in ("Bet365", "bwin", "Unibet")} | {"Matchbook": x12(9.0, 9.0, 9.0)}
     assert fair_price(quotes, ("home", "draw", "away"), "consensus").books == 3
+
+
+def test_latest_quotes_tolerates_split_timestamps_but_drops_stale_sides():
+    from parlay.betting.value import latest_quotes
+
+    t = datetime(2030, 1, 5, 9, tzinfo=timezone.utc)
+    rows = [
+        OddsSnapshot("m", "1xBet", "totals_2.5", "over", 1.9, t),
+        OddsSnapshot("m", "1xBet", "totals_2.5", "under", 1.95, t + timedelta(microseconds=12)),
+        OddsSnapshot("m", "Bet365", "totals_2.5", "over", 2.0, t - timedelta(days=1)),  # stale side
+        OddsSnapshot("m", "Bet365", "totals_2.5", "under", 1.8, t),
+    ]
+    quotes = latest_quotes(rows, t + timedelta(hours=1))["totals_2.5"]
+    assert quotes["1xBet"] == {"over": 1.9, "under": 1.95}
+    assert quotes["Bet365"] == {"under": 1.8}

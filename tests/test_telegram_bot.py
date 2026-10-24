@@ -154,40 +154,75 @@ def test_simulation_bet(bot):
 
 def test_parlay_slip_flow(bot):
     bot.on_button("42", "m:slip")
-    assert "minimal 2" in bot.api.sent[-1][1]
+    assert "Butuh minimal 2" in bot.api.sent[-1][1] and "m:add" in bot.api.buttons()
     bot.on_button("42", "m:value")
     keys = [d[2:] for d in bot.api.buttons() if d.startswith("a:")]
     for key in keys:
         bot.on_button("42", f"a:{key}")
     bot.on_button("42", f"a:{keys[0]}")
-    assert "sudah ada di slip" in bot.api.sent[-1][1]
+    assert "diganti" in bot.api.sent[-1][1] and len(bot.state.slip("42")) == 2
     bot.on_button("42", "m:slip")
-    card = bot.api.sent[-1][1]
+    card, buttons = bot.api.sent[-1][1], bot.api.sent[-1][2]
     assert "Mix parlay 2 tim" in card and "Peluang tiket menang" in card
-    assert "t:" in [d for _, _, rows in bot.api.sent[-1:] for row in rows for _, d in row]
+    datas = [d for row in buttons for _, d in row]
+    assert "t:" in datas and sum(d.startswith("r:") for d in datas) == 2
     bot.on_button("42", "t:")
     bot.on_text("42", "20rb")
-    assert "Tiket parlay #1 dicatat" in bot.api.sent[-1][1]
+    assert "Tiket parlay #1 (2 tim) dicatat" in bot.api.sent[-1][1]
     assert bot.state.slip("42") == [] and len(bot.ledger.tickets(kind="real")) == 1
 
 
-def test_negative_slip_says_do_not_bet(tmp_path):
-    seeded_db(tmp_path / "db.sqlite", soft_home=1.8)
-    bot = ParlayBot(FakeAPI(), {"42"}, database=str(tmp_path / "db.sqlite"), books="1xBet")
-    bot.ledger.save_candidates([])
-    from parlay.betting.value import ValueConfig, find_value_bets
-
-    now = datetime.now(timezone.utc)
-    bets = find_value_bets(
-        bot.db.load_matches(), bot.db.load_odds(), ValueConfig(min_ev=-1, max_ev=1), as_of=now
-    )
-    bets = [b for b in bets if b.selection == "home" and b.bookmaker == "1xBet"]
-    bot.ledger.save_candidates(bets)
-    for b in bets:
-        bot.state.add_to_slip("42", b.key)
+def test_pick_any_match_and_remove_legs(tmp_path):
+    seeded_db(tmp_path / "db.sqlite", n=3, soft_home=1.8)  # no value: every 1xBet price below fair
+    bot = ParlayBot(FakeAPI(), {"42"}, database=str(tmp_path / "db.sqlite"), books="1xBet,Pinnacle")
+    bot.on_button("42", "m:add")
+    match_buttons = [d for d in bot.api.buttons() if d.startswith("g:")]
+    assert len(match_buttons) == 3
+    for data in match_buttons[:2]:
+        bot.on_button("42", data)
+        pick = next(
+            d for _, _, rows in bot.api.sent[-1:] for row in rows for _, d in row if d.startswith("k:")
+        )
+        assert "EV" in bot.api.sent[-1][2][0][0][0]
+        bot.on_button("42", pick)
     bot.on_button("42", "m:slip")
-    assert "Jangan dipasang" in bot.api.sent[-1][1]
-    assert "t:" not in [d for _, _, rows in bot.api.sent[-1:] for row in rows for _, d in row]
+    card, buttons = bot.api.sent[-1][1], bot.api.sent[-1][2]
+    datas = [d for row in buttons for _, d in row]
+    assert "Jangan dipasang" in card and "disembunyikan karena EV tiket negatif" in card
+    assert ("📝 Tetap catat (sudah saya pasang)", "t:") in [b for row in buttons for b in row]
+    remove = next(d for d in datas if d.startswith("r:"))
+    bot.on_button("42", remove)
+    assert len(bot.state.slip("42")) == 1 and "Butuh minimal 2" in bot.api.sent[-1][1]
+
+
+def test_leg_without_reference_price_explains_hidden_button(bot):
+    from parlay.telegram.state import SlipLeg
+
+    matches = bot.db.load_matches()
+    bot.db.insert_odds(
+        [
+            OddsSnapshot(matches[1].match_id, "1xBet", "totals_2.5", side, price, datetime.now(timezone.utc))
+            for side, price in (("over", 1.9), ("under", 1.9))
+        ]
+    )
+    bot.state.add_leg("42", SlipLeg(matches[0].match_id, "1x2", "home", "1xBet"))
+    bot.state.add_leg("42", SlipLeg(matches[1].match_id, "totals_2.5", "over", "1xBet"))
+    bot.on_button("42", "m:slip")
+    card = bot.api.sent[-1][1]
+    assert "❔ tanpa harga Pinnacle" in card and "EV tidak bisa dihitung" in card
+
+
+def test_old_slips_are_migrated(tmp_path):
+    seeded_db(tmp_path / "db.sqlite")
+    bot = ParlayBot(FakeAPI(), {"42"}, database=str(tmp_path / "db.sqlite"), books="1xBet")
+    bets = bot.value_bets()
+    bot.db.connection.execute("CREATE TABLE bot_slips (chat_id TEXT, candidate_key TEXT, added_at TEXT)")
+    bot.db.connection.execute("INSERT INTO bot_slips VALUES ('42', ?, '2030-01-01')", (bets[0].key,))
+    bot.db.connection.commit()
+    from parlay.telegram.state import BotState
+
+    state = BotState(bot.db)
+    assert [leg.match_id for leg in state.slip("42")] == [bets[0].match_id]
 
 
 def test_bankroll_report_schedule_and_unknown_input(bot):

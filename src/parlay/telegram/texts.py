@@ -67,6 +67,13 @@ def when(moment: datetime | None) -> str:
     return f"{DAYS[local.weekday()]} {local.day} {MONTHS[local.month - 1]}, {local:%H:%M} {zone_label(local)}"
 
 
+def short_when(moment: datetime | None) -> str:
+    if moment is None:
+        return "?"
+    local = moment.astimezone(local_zone())
+    return f"{DAYS[local.weekday()][:3]} {local:%H:%M}"
+
+
 def money(amount: float, currency: str | None = None) -> str:
     currency = currency if currency is not None else os.environ.get("PARLAY_CURRENCY", "Rp")
     sign = "-" if amount < 0 else ""
@@ -148,7 +155,10 @@ def ticket_card(ticket: Ticket, bankroll: float) -> str:
     for number, leg in enumerate(ticket.legs, start=1):
         pick, _ = describe_bet(leg.home_team, leg.away_team, leg.market, leg.selection)
         leg_ev = f" · EV {pct(leg.expected_value, signed=True)}" if leg.expected_value is not None else ""
-        warn = " ⚠️" if leg.expected_value is not None and leg.expected_value < 0 else ""
+        if leg.expected_value is None:
+            warn = " ❔ tanpa harga Pinnacle"
+        else:
+            warn = " ⚠️" if leg.expected_value < 0 else ""
         lines.append(
             f"{number}. {esc(leg.home_team)} vs {esc(leg.away_team)}: "
             f"<b>{esc(pick)}</b> @ {leg.odds:.2f}{leg_ev}{warn}"
@@ -157,7 +167,7 @@ def ticket_card(ticket: Ticket, bankroll: float) -> str:
     lines.append(f"\n💰 Total odds: <b>{ticket.combined_odds:.2f}</b>{boost}")
     p = ticket.win_probability
     if p is None:
-        lines.append("❔ Ada tim tanpa harga Pinnacle, EV tidak bisa dihitung.")
+        lines.append("❔ Ada tim tanpa harga Pinnacle, jadi EV tiket tidak bisa dihitung.")
         return "\n".join(lines)
     ev = ticket.expected_value or 0.0
     stake = ticket.stake_fraction() * bankroll
@@ -172,9 +182,17 @@ def ticket_card(ticket: Ticket, bankroll: float) -> str:
             "di parlay kerugian kecil itu berlipat."
         )
     else:
-        lines.append(
-            f"💵 Saran taruhan: <b>{money(stake)}</b> — kecil saja, tiket parlay lebih sering kalah."
-        )
+        negative = [leg for leg in ticket.legs if (leg.expected_value or 0.0) < 0]
+        if negative:
+            without = (
+                math.prod(1.0 + (leg.expected_value or 0.0) for leg in ticket.legs if leg not in negative) - 1
+            )
+            lines.append(
+                f"⚠️ {len(negative)} tim bertanda ⚠️ menurunkan EV. "
+                f"Tanpa tim itu, EV tiket {pct(without, signed=True)}."
+            )
+        lines.append(stake_line(stake, ticket.stake_fraction()))
+        lines.append("ℹ️ Tiket parlay jauh lebih sering kalah daripada single; pasang kecil saja.")
     return "\n".join(lines)
 
 
