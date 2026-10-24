@@ -62,7 +62,7 @@ def parlay_from_score_matrix(
     matrix = np.asarray(matrix, dtype=float)
     masks = [leg.mask(matrix.shape) for leg in legs]
     probabilities = {leg.name: float(matrix[mask].sum()) for leg, mask in zip(legs, masks, strict=True)}
-    joint = float(matrix[np.logical_and.reduce(masks)].sum())
+    joint = float(matrix[np.all(masks, axis=0)].sum())
     independent = math.prod(probabilities.values())
     indicators = np.stack([mask.ravel().astype(float) for mask in masks])
     covariance = (
