@@ -71,3 +71,20 @@
 - `BacktestConfig` replaces the long keyword lists; `cli.py` became a package.
 - Removed `--sot-weight`, `--early-season-shrinkage`, the heuristic estimator
   and `models.dynamic`.
+
+### Upgrading from 0.1
+- Rebuild the database; the loader now also stores every bookmaker, Asian
+  handicap and closing price and converts kickoff times to UTC:
+  `rm data/parlay.sqlite && parlay fetch --from-season 2018 --to-season 2026`.
+- Shrinkage comes from the L2 prior (`--l2-reg`), shots on target from
+  `--sot-blend`.
+- `run_backtest(matches, odds, BacktestConfig(...))` replaces the keyword
+  lists; `run_backtest_full` and `tune_half_life_nested` were folded into
+  `run_backtest` and `nested_tuning`.
+- `prediction.markets.totals_probabilities` replaces
+  `totals_settlement_probabilities`, `corner_totals_probabilities` and
+  `models.poisson.totals_probability`.
+- `python -m parlay` still works after `cli.py` became the `parlay.cli`
+  package.
+- Corner odds columns in fixture CSVs: prefer `B365CRN>x` (football-data uses
+  `B365C>2.5` for closing goal totals).
